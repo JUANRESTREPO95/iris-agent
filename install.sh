@@ -581,10 +581,15 @@ if [[ $SKIP_SIGNIN -eq 0 ]]; then
   echo
   log "Sesión de Ollama Cloud"
   dim "Se abrirá una URL. Ábrela en el navegador, autoriza y vuelve aquí."
-  sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" signin || true
+  # </dev/tty es imprescindible: bajo `curl | bash` el stdin es el script y
+  # `ollama signin` imprimiría la URL y saldría sin esperar la autorización.
+  sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" signin </dev/tty || true
 
+  SIGNIN_OUT="$(mktemp)"
   for _ in 1 2 3 4 5; do
-    if timeout 180 sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" run "$MODEL" "Responde solo: OK" >/dev/null 2>&1; then
+    if timeout 180 sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" run "$MODEL" "Responde solo: OK" \
+         >"$SIGNIN_OUT" 2>&1 \
+       && ! grep -qiE "need to be signed in|sign in was cancelled|failed to sign in" "$SIGNIN_OUT"; then
       SIGNIN_OK=1
       ok "Sesión de Ollama verificada."
       break
@@ -595,6 +600,7 @@ if [[ $SKIP_SIGNIN -eq 0 ]]; then
     read -rp "Completa el inicio de sesión y pulsa Enter para reintentar (o escribe 'saltar'): " answer </dev/tty || true
     [[ "${answer:-}" == "saltar" ]] && break
   done
+  rm -f "$SIGNIN_OUT"
 fi
 
 if ! run_logged "Verificando modelo $MODEL" \
@@ -628,7 +634,7 @@ if [[ $SKIP_PAIR -eq 0 ]]; then
   log "Pareo de WhatsApp"
   dim "Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular dispositivo."
   systemctl stop iris-bridge.service 2>/dev/null || true
-  sudo -u "$IRIS_USER" -H bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" \
+  sudo -u "$IRIS_USER" -H bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" </dev/tty \
     || warn "El pareo no terminó. Puedes reintentarlo con:  sudo iris pair"
 fi
 

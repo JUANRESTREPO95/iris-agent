@@ -91,7 +91,7 @@ cmd_pair() {
   as_iris mkdir -p "$session"
 
   info "Escanea el QR con WhatsApp (Dispositivos vinculados)."
-  as_iris bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" || true
+  as_iris bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" </dev/tty || true
   info "Reiniciando el puente…"
   as_root systemctl start iris-bridge.service
   sleep 2
