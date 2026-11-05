@@ -56,13 +56,14 @@ Según la opción:
 
 | Opción | Qué hace |
 |---|---|
-| 1 | Instala **Ollama**, hace `ollama signin` y muestra la lista de modelos cloud para elegir con flechas |
+| 1 | Instala **Ollama**, hace `ollama signin` y muestra la lista de modelos cloud para elegir con un número |
 | 2 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
 | 3 | Pide la clave `sk-ant-api...` (sin mostrarla) |
 | 4 | Pide URL base, token y modelo |
 
-Los menús se navegan con **flechas** y Enter. Si no hay terminal interactiva, caen a
-una lista numerada.
+Los menús son de terminal, con colores y opciones numeradas: escribes el número y
+Enter (Enter solo = opción 1). No cambian el modo del terminal ni necesitan
+dependencias extra.
 
 > **Ollama:** el núcleo ejecuta el equivalente headless de
 > `ollama launch claude --model deepseek-v4.1-flash:cloud`, con el daemon local y

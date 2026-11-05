@@ -57,6 +57,14 @@ warn() { printf '%s[aviso]%s %s\n' "$c_yellow" "$c_reset" "$*"; log_to_file "[av
 die()  { printf '%s[error]%s %s\n' "$c_red" "$c_reset" "$*" >&2; log_to_file "[error] $*"; exit 1; }
 dim()  { printf '%s%s%s\n' "$c_dim" "$*" "$c_reset"; }
 
+print_banner() {
+  printf '\n'
+  printf '%s  ╭──────────────────────────────────────────────╮%s\n' "$c_cyan" "$c_reset"
+  printf '%s  │%s  IRIS · Claude Code por WhatsApp           %s│%s\n' "$c_cyan" "$c_reset" "$c_cyan" "$c_reset"
+  printf '%s  ╰──────────────────────────────────────────────╯%s\n' "$c_cyan" "$c_reset"
+  printf '\n'
+}
+
 # Ejecuta un comando, guarda toda su salida en el log y, si falla, muestra
 # las últimas líneas y la ruta del log completo.
 run_logged() {
@@ -290,6 +298,9 @@ fi
 trap 'write_state failed "línea $LINENO"; die "Falló la línea $LINENO. Revisa el mensaje anterior."' ERR
 trap cleanup_source_tmp EXIT
 
+# Si una ejecución anterior dejó el terminal en modo raro (whiptail), lo restauramos.
+stty sane </dev/tty 2>/dev/null || true
+
 # ── Sistema ────────────────────────────────────────────────────────────────
 
 [[ -f /etc/os-release ]] || die "No puedo identificar la distribución."
@@ -349,6 +360,8 @@ fi
 
 # ── Preguntas ──────────────────────────────────────────────────────────────
 
+print_banner
+
 read_secret() {
   local __var=$1 __prompt=$2 __value=""
   read -rsp "$__prompt: " __value </dev/tty || true
@@ -367,49 +380,54 @@ provider_label() {
   esac
 }
 
-ensure_whiptail() {
-  command -v whiptail >/dev/null 2>&1 && return 0
-  [[ $ASSUME_YES -eq 0 ]] || return 1
-  dim "  Preparando el menú interactivo…"
-  export DEBIAN_FRONTEND=noninteractive
-  if ! apt-get install -y -qq whiptail >/dev/null 2>&1; then
-    apt-get update -qq >/dev/null 2>&1 || true
-    apt-get install -y -qq whiptail >/dev/null 2>&1 || true
-  fi
-  command -v whiptail >/dev/null 2>&1
-}
-
-# Menú con flechas (whiptail). Recibe título, pregunta y pares etiqueta/descripción.
-# Si whiptail no está disponible, cae a una lista numerada.
+# Menú de terminal con colores. Cada elemento es "clave::etiqueta::descripción".
+# La interfaz va a stderr (visible) y la clave elegida a stdout (capturada).
 ui_menu() {
   local title="$1" prompt="$2"; shift 2
-  if command -v whiptail >/dev/null 2>&1; then
-    local result
-    result="$(whiptail --title "$title" --menu "$prompt" 22 82 12 \
-      "$@" 3>&1 1>&2 2>&3 </dev/tty)" || return 1
-    printf '%s' "$result"
-    return 0
-  fi
+  local -a keys=() labels=() descs=()
+  local item key rest label desc
 
-  local -a tags=()
-  local i=1 tag desc
-  printf '\n%s\n%s\n' "$title" "$prompt" >&2
-  while [[ $# -ge 2 ]]; do
-    tags+=("$1")
-    printf '  %2d) %s — %s\n' "$i" "$1" "$2" >&2
-    i=$((i + 1))
-    shift 2
+  for item in "$@"; do
+    key="${item%%::*}"
+    rest="${item#*::}"
+    if [[ $rest == *::* ]]; then
+      label="${rest%%::*}"
+      desc="${rest#*::}"
+    else
+      label="$rest"
+      desc=""
+    fi
+    keys+=("$key")
+    labels+=("$label")
+    descs+=("$desc")
   done
-  local choice
-  read -rp "Número: " choice </dev/tty || return 1
-  [[ $choice =~ ^[0-9]+$ ]] || return 1
-  (( choice >= 1 && choice <= ${#tags[@]} )) || return 1
-  printf '%s' "${tags[$((choice - 1))]}"
+
+  local n=${#keys[@]} choice="" i
+  {
+    printf '\n'
+    printf '%s╭─ %s%s\n' "$c_cyan" "$title" "$c_reset"
+    printf '%s│%s %s\n' "$c_cyan" "$c_reset" "$prompt"
+    printf '%s├──────────────────────────────────────────────────────────────%s\n' "$c_dim" "$c_reset"
+    for i in "${!keys[@]}"; do
+      printf '  %s%2d)%s %-40s %s%s%s\n' \
+        "$c_yellow" "$((i + 1))" "$c_reset" "${labels[$i]}" \
+        "$c_dim" "${descs[$i]}" "$c_reset"
+    done
+    printf '%s╰──────────────────────────────────────────────────────────────%s\n' "$c_dim" "$c_reset"
+  } >&2
+
+  while :; do
+    read -rp "  Elige [1-$n] (Enter = 1): " choice </dev/tty || return 1
+    choice="${choice:-1}"
+    if [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
+      printf '%s' "${keys[$((choice - 1))]}"
+      return 0
+    fi
+    printf '  Opción no válida.\n' >&2
+  done
 }
 
-# Los paneles de whiptail solo se usan para elegir con flechas (menús).
-# Las cajas de texto de whiptail no se envían con Enter (hay que usar Tab),
-# así que el texto y las claves se piden con prompts normales.
+# Las entradas de texto se piden con prompts normales (Enter funciona).
 ui_input() {
   local __var=$1 __prompt=$2 __default=${3:-}
   ask "$__var" "$__prompt" "$__default"
@@ -431,12 +449,12 @@ ui_msgbox() {
 select_claude_model() {
   [[ -n $MODEL ]] && return 0
   local choice
-  choice="$(ui_menu "Iris — modelo de Claude" "¿Qué modelo quieres usar?" \
-    "__default__" "Predeterminado de Claude Code" \
-    "sonnet" "Sonnet (equilibrado)" \
-    "opus" "Opus (máxima capacidad)" \
-    "haiku" "Haiku (rápido)" \
-    "__other__" "Escribir otro alias o nombre")" \
+  choice="$(ui_menu "Modelo de Claude" "¿Qué modelo quieres usar?" \
+    "__default__::Predeterminado de Claude Code::el que traiga Claude" \
+    "sonnet::Sonnet::equilibrado" \
+    "opus::Opus::máxima capacidad" \
+    "haiku::Haiku::rápido" \
+    "__other__::Escribir otro::alias o nombre completo")" \
     || die "Selección cancelada."
   if [[ $choice == __default__ ]]; then
     MODEL=""
@@ -487,12 +505,12 @@ except Exception:
 
   local -a menu=()
   for m in "${models[@]}"; do
-    menu+=("$m" "$m")
+    menu+=("$m::$m::cloud")
   done
-  menu+=("__other__" "Escribir otro modelo")
+  menu+=("__other__::Escribir otro modelo::")
 
   local choice
-  choice="$(ui_menu "Iris — modelo de Ollama" "Elige el modelo cloud" "${menu[@]}")" \
+  choice="$(ui_menu "Modelo de Ollama" "Elige el modelo cloud" "${menu[@]}")" \
     || die "Selección cancelada."
 
   if [[ $choice == __other__ ]]; then
@@ -515,13 +533,12 @@ choose_provider() {
     return 0
   fi
 
-  ensure_whiptail || true
   local choice
-  choice="$(ui_menu "Iris — proveedor del modelo" "¿Cómo quieres conectar el modelo?" \
-    "ollama-local" "Ollama — instala y firma (modelos :cloud)" \
-    "claude-subscription" "Claude — suscripción Pro/Max/Team" \
-    "claude-api" "Claude — clave de API (console.anthropic.com)" \
-    "custom" "Otro endpoint compatible con Anthropic")" \
+  choice="$(ui_menu "Proveedor del modelo" "¿Cómo quieres conectar el modelo de Iris?" \
+    "ollama-local::Ollama — instala y firma::modelos :cloud" \
+    "claude-subscription::Claude — suscripción::Pro/Max/Team" \
+    "claude-api::Claude — clave de API::console.anthropic.com" \
+    "custom::Otro endpoint::compatible con Anthropic")" \
     || die "Selección cancelada."
   PROVIDER="$choice"
   echo
