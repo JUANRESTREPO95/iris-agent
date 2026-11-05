@@ -51,9 +51,16 @@ Según la opción:
 |---|---|
 | 1 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
 | 2 | Pide la clave `sk-ant-api...` (sin mostrarla) |
-| 3 | Usa `https://ollama.com` con tu clave; **no instala Ollama** |
-| 4 | Instala Ollama, hace `ollama signin` y usa el daemon local |
+| 3 | Usa `https://ollama.com` con tu clave; **no instala Ollama**. Valida la clave y te muestra la lista de modelos cloud para elegir con flechas |
+| 4 | Instala Ollama, hace `ollama signin` y usa el daemon local. El modelo se elige de la misma lista |
 | 5 | Pide URL base, token y modelo |
+
+Los menús se navegan con **flechas** y Enter. Si no hay terminal interactiva, caen a
+una lista numerada.
+
+> **Nombres de modelo:** con la API directa de Ollama se usa el nombre de
+> `/api/tags` **sin** `:cloud` (p. ej. `deepseek-v4.1-flash`). Con Ollama local se
+> añade `:cloud` automáticamente (`deepseek-v4.1-flash:cloud`).
 
 Después crea el usuario **`iris`** y las carpetas (`/opt/iris`,
 `/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), empareja

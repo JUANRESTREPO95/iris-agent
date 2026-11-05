@@ -171,6 +171,44 @@ backup_existing() {
   fi
 }
 
+fetch_cloud_models() {
+  local html slugs
+  html="$(curl -fsSL --max-time 20 'https://ollama.com/search?c=cloud' 2>/dev/null || true)"
+  [[ -n $html ]] || return 1
+  slugs="$(printf '%s' "$html" \
+    | grep -oE 'href="/library/[^"]+"' \
+    | sed -E 's|href="/library/||; s|"$||' \
+    | sort -u)"
+  [[ -n $slugs ]] || return 1
+  printf '%s\n' "$slugs"
+}
+
+normalize_ollama_model() {
+  local provider="$1"
+  if [[ $provider == ollama-cloud ]]; then
+    # La API directa no usa el sufijo :cloud (solo el Ollama local).
+    MODEL="${MODEL%:cloud}"
+  else
+    # Ollama local usa :cloud para enrutar el modelo a la nube.
+    [[ $MODEL == *:cloud ]] || MODEL="${MODEL}:cloud"
+  fi
+  [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+}
+
+validate_ollama_key() {
+  local key="$1" model="${2:-deepseek-v4.1-flash}" code
+  code="$(curl -s -o /tmp/iris-key-test.json -w '%{http_code}' --max-time 60 \
+    https://ollama.com/api/chat \
+    -H "Authorization: Bearer $key" \
+    -H 'content-type: application/json' \
+    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"di OK\"}],\"stream\":false}" \
+    2>/dev/null || echo 000)"
+  case "$code" in
+    401) return 2 ;;
+    000) return 1 ;;
+    *) return 0 ;;
+  esac
+}
 
 confirm() {
   local answer=""
@@ -329,6 +367,111 @@ provider_label() {
   esac
 }
 
+ensure_whiptail() {
+  command -v whiptail >/dev/null 2>&1 && return 0
+  [[ $ASSUME_YES -eq 0 ]] || return 1
+  dim "  Preparando el menú interactivo…"
+  export DEBIAN_FRONTEND=noninteractive
+  if ! apt-get install -y -qq whiptail >/dev/null 2>&1; then
+    apt-get update -qq >/dev/null 2>&1 || true
+    apt-get install -y -qq whiptail >/dev/null 2>&1 || true
+  fi
+  command -v whiptail >/dev/null 2>&1
+}
+
+# Menú con flechas (whiptail). Recibe título, pregunta y pares etiqueta/descripción.
+# Si whiptail no está disponible, cae a una lista numerada.
+ui_menu() {
+  local title="$1" prompt="$2"; shift 2
+  if command -v whiptail >/dev/null 2>&1; then
+    local result
+    result="$(whiptail --title "$title" --menu "$prompt" 22 82 12 \
+      "$@" 3>&1 1>&2 2>&3 </dev/tty)" || return 1
+    printf '%s' "$result"
+    return 0
+  fi
+
+  local -a tags=()
+  local i=1 tag desc
+  printf '\n%s\n%s\n' "$title" "$prompt" >&2
+  while [[ $# -ge 2 ]]; do
+    tags+=("$1")
+    printf '  %2d) %s — %s\n' "$i" "$1" "$2" >&2
+    i=$((i + 1))
+    shift 2
+  done
+  local choice
+  read -rp "Número: " choice </dev/tty || return 1
+  [[ $choice =~ ^[0-9]+$ ]] || return 1
+  (( choice >= 1 && choice <= ${#tags[@]} )) || return 1
+  printf '%s' "${tags[$((choice - 1))]}"
+}
+
+select_claude_model() {
+  [[ -n $MODEL ]] && return 0
+  local choice
+  choice="$(ui_menu "Iris — modelo de Claude" "¿Qué modelo quieres usar?" \
+    "__default__" "Predeterminado de Claude Code" \
+    "sonnet" "Sonnet (equilibrado)" \
+    "opus" "Opus (máxima capacidad)" \
+    "haiku" "Haiku (rápido)" \
+    "__other__" "Escribir otro alias o nombre")" \
+    || die "Selección cancelada."
+  if [[ $choice == __default__ ]]; then
+    MODEL=""
+  elif [[ $choice == __other__ ]]; then
+    ask MODEL "Modelo (alias o nombre completo)" ""
+  else
+    MODEL="$choice"
+  fi
+}
+
+select_ollama_model() {
+  local provider="$1"
+  [[ -n $MODEL ]] && { normalize_ollama_model "$provider"; return 0; }
+
+  local -a models=()
+  local m
+
+  # Con clave válida, /api/tags da los nombres exactos de la API.
+  if [[ $provider == ollama-cloud && -n ${OLLAMA_KEY:-} ]]; then
+    while IFS= read -r m; do
+      [[ -n $m ]] && models+=("$m")
+    done < <(curl -fsSL --max-time 20 https://ollama.com/api/tags \
+      -H "Authorization: Bearer $OLLAMA_KEY" 2>/dev/null \
+      | python3 -c 'import json,sys
+try:
+    for x in json.load(sys.stdin).get("models", []):
+        if x.get("name"): print(x["name"])
+except Exception:
+    pass' 2>/dev/null || true)
+  fi
+
+  # Si no hubo lista (o es Ollama local), usar el catálogo cloud de la web.
+  if (( ${#models[@]} == 0 )); then
+    while IFS= read -r m; do
+      [[ -n $m ]] && models+=("$m")
+    done < <(fetch_cloud_models || true)
+  fi
+
+  local -a menu=()
+  for m in "${models[@]}"; do
+    menu+=("$m" "$m")
+  done
+  menu+=("__other__" "Escribir otro modelo")
+
+  local choice
+  choice="$(ui_menu "Iris — modelo de Ollama" "Elige el modelo cloud" "${menu[@]}")" \
+    || die "Selección cancelada."
+
+  if [[ $choice == __other__ ]]; then
+    ask MODEL "Modelo" "${models[0]:-deepseek-v4.1-flash}"
+  else
+    MODEL="$choice"
+  fi
+  normalize_ollama_model "$provider"
+}
+
 choose_provider() {
   if [[ -n $PROVIDER ]]; then
     case $PROVIDER in
@@ -340,56 +483,61 @@ choose_provider() {
     PROVIDER=ollama-local
     return 0
   fi
+
+  ensure_whiptail || true
+  local choice
+  choice="$(ui_menu "Iris — proveedor del modelo" "¿Cómo quieres conectar el modelo?" \
+    "claude-subscription" "Claude — suscripción Pro/Max/Team" \
+    "claude-api" "Claude — clave de API (console.anthropic.com)" \
+    "ollama-cloud" "Ollama Cloud — clave de API, sin instalar Ollama" \
+    "ollama-local" "Ollama Cloud — Ollama local (instala y firma)" \
+    "custom" "Otro endpoint compatible con Anthropic")" \
+    || die "Selección cancelada."
+  PROVIDER="$choice"
   echo
-  log "¿Cómo quieres conectar el modelo de Iris?"
-  dim "  1) Claude — suscripción Pro/Max/Team (token por navegador)"
-  dim "  2) Claude — clave de API (console.anthropic.com)"
-  dim "  3) Ollama Cloud — clave de API, sin instalar Ollama"
-  dim "  4) Ollama Cloud — Ollama local (instala y firma)"
-  dim "  5) Otro endpoint compatible con Anthropic"
-  local choice=""
-  read -rp "Elige [1-5] (por defecto 3): " choice </dev/tty || true
-  case "${choice:-3}" in
-    1) PROVIDER=claude-subscription ;;
-    2) PROVIDER=claude-api ;;
-    3) PROVIDER=ollama-cloud ;;
-    4) PROVIDER=ollama-local ;;
-    5) PROVIDER=custom ;;
-    *) die "Opción no válida." ;;
-  esac
+  ok "Proveedor: $(provider_label "$PROVIDER")"
 }
 
 collect_provider_config() {
   case $PROVIDER in
     claude-subscription)
-      if [[ -z $MODEL ]]; then
-        ask MODEL "Modelo (vacío = el de Claude Code; alias: sonnet, opus, haiku)" ""
-      fi
+      select_claude_model
       ;;
     claude-api)
       if [[ -z $ANTHROPIC_KEY ]]; then
         read_secret ANTHROPIC_KEY "Clave API de Anthropic (sk-ant-api...)"
       fi
       [[ -n $ANTHROPIC_KEY ]] || die "Necesito la clave de Anthropic."
-      if [[ -z $MODEL ]]; then
-        ask MODEL "Modelo (vacío = el de Claude Code; alias: sonnet, opus, haiku)" ""
-      fi
+      select_claude_model
       ;;
     ollama-cloud)
-      if [[ -z $OLLAMA_KEY ]]; then
-        read_secret OLLAMA_KEY "Clave API de Ollama (ollama.com/settings/keys)"
-      fi
-      [[ -n $OLLAMA_KEY ]] || die "Necesito la clave de Ollama."
-      if [[ -z $MODEL ]]; then
-        ask MODEL "Modelo de Ollama" "$DEFAULT_MODEL"
-      fi
-      [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+      local tries=0 rc=0
+      while :; do
+        if [[ -z $OLLAMA_KEY ]]; then
+          read_secret OLLAMA_KEY "Clave API de Ollama (ollama.com/settings/keys)"
+        fi
+        [[ -n $OLLAMA_KEY ]] || die "Necesito la clave de Ollama."
+        rc=0
+        validate_ollama_key "$OLLAMA_KEY" "deepseek-v4.1-flash" || rc=$?
+        if [[ $rc -eq 0 ]]; then
+          ok "Clave de Ollama aceptada."
+          break
+        fi
+        if [[ $rc -eq 2 ]]; then
+          warn "Ollama rechazó la clave (401). Verifica que sea la clave correcta de ollama.com/settings/keys."
+          OLLAMA_KEY=""
+          tries=$((tries + 1))
+          [[ $tries -ge 3 ]] && die "No pude validar la clave de Ollama tras 3 intentos."
+          [[ $ASSUME_YES -eq 1 ]] && break
+        else
+          warn "No pude comprobar la clave ahora (red). Continuaré con la instalación."
+          break
+        fi
+      done
+      select_ollama_model ollama-cloud
       ;;
     ollama-local)
-      if [[ -z $MODEL ]]; then
-        ask MODEL "Modelo de Ollama" "$DEFAULT_MODEL"
-      fi
-      [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+      select_ollama_model ollama-local
       ;;
     custom)
       if [[ -z $CUSTOM_BASE ]]; then
