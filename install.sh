@@ -73,9 +73,10 @@ run_logged() {
   local rc=0
   if [[ -n ${INSTALL_LOG:-} ]]; then
     printf '\n==> %s (%s)\n' "$label" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >>"$INSTALL_LOG" 2>/dev/null || true
-    "$@" >>"$INSTALL_LOG" 2>&1 || rc=$?
+    # </dev/null: bajo `curl | bash` el stdin es el script; ningún hijo debe leerlo.
+    "$@" >>"$INSTALL_LOG" 2>&1 </dev/null || rc=$?
   else
-    "$@" || rc=$?
+    "$@" </dev/null || rc=$?
   fi
   if (( rc != 0 )); then
     printf '%s[error]%s %s falló (código %s)\n' "$c_red" "$c_reset" "$label" "$rc" >&2
@@ -956,7 +957,7 @@ if [[ $PROVIDER == ollama-local ]]; then
     SIGNIN_OUT="$(mktemp)"
     for _ in 1 2 3 4 5; do
       if timeout 180 sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" run "$MODEL" "Responde solo: OK" \
-           >"$SIGNIN_OUT" 2>&1 \
+           >"$SIGNIN_OUT" 2>&1 </dev/null \
          && ! grep -qiE "need to be signed in|sign in was cancelled|failed to sign in" "$SIGNIN_OUT"; then
         SIGNIN_OK=1
         ok "Sesión de Ollama verificada."
@@ -987,7 +988,7 @@ if [[ $SKIP_PAIR -eq 0 ]]; then
   dim "Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular dispositivo."
   dim "No cierres esta terminal: si el QR caduca, se genera otro automáticamente."
   if [[ -x /usr/local/bin/iris ]]; then
-    /usr/local/bin/iris pair || warn "El pareo no terminó. Reinténtalo con:  sudo iris pair"
+    /usr/local/bin/iris pair </dev/null || warn "El pareo no terminó. Reinténtalo con:  sudo iris pair"
   else
     systemctl stop iris-bridge.service 2>/dev/null || true
     sudo -u "$IRIS_USER" -H bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" </dev/tty \
@@ -1022,7 +1023,8 @@ if [[ $SIGNIN_OK -eq 1 ]]; then
   chmod 0700 "$TEST_SCRIPT"
   chown "$IRIS_USER":"$IRIS_USER" "$TEST_SCRIPT"
 
-  if timeout 180 sudo -u "$IRIS_USER" -H bash "$TEST_SCRIPT" >/tmp/iris-test.json 2>/tmp/iris-test.err; then
+  if timeout 180 sudo -u "$IRIS_USER" -H bash "$TEST_SCRIPT" \
+       >/tmp/iris-test.json 2>/tmp/iris-test.err </dev/null; then
     if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true|"type"[[:space:]]*:[[:space:]]*"error"' /tmp/iris-test.json \
        || ! grep -qE '"session_id"|"result"' /tmp/iris-test.json; then
       warn "Claude respondió con un error inesperado:"
