@@ -412,12 +412,12 @@ ui_menu() {
 # así que el texto y las claves se piden con prompts normales.
 ui_input() {
   local __var=$1 __prompt=$2 __default=${3:-}
-  ask __var "$__prompt" "$__default"
+  ask "$__var" "$__prompt" "$__default"
 }
 
 ui_password() {
   local __var=$1 __prompt=$2
-  read_secret __var "$__prompt"
+  read_secret "$__var" "$__prompt"
 }
 
 ui_yesno() {
