@@ -102,6 +102,7 @@ def health():
         "queue": status["queue"],
         "running": status["running"],
         "bridge": (bridge.health(cfg) or {}).get("status", "desconocido"),
+        "provider": cfg.provider,
         "model": cfg.model,
         "version": "0.1.0",
     }

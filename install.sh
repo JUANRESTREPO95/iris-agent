@@ -36,6 +36,12 @@ SKIP_PAIR=0
 PURGE=0
 PHONE="${IRIS_PHONE:-}"
 MODEL="${IRIS_MODEL:-}"
+PROVIDER="${IRIS_PROVIDER:-}"
+ANTHROPIC_KEY="${IRIS_ANTHROPIC_KEY:-}"
+OLLAMA_KEY="${IRIS_OLLAMA_KEY:-}"
+OAUTH_TOKEN="${IRIS_OAUTH_TOKEN:-}"
+CUSTOM_BASE="${IRIS_CUSTOM_BASE:-}"
+CUSTOM_TOKEN="${IRIS_CUSTOM_TOKEN:-}"
 
 c_reset=$'\033[0m'; c_cyan=$'\033[1;36m'; c_green=$'\033[1;32m'
 c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_dim=$'\033[2m'
@@ -91,6 +97,7 @@ write_state() {
     printf '  "outcome": "%s",\n' "$(json_escape "$outcome")"
     printf '  "detail": "%s",\n' "$(json_escape "$detail")"
     printf '  "mode": "%s",\n' "$(json_escape "${MODE:-install}")"
+    printf '  "provider": "%s",\n' "$(json_escape "${PROVIDER:-}")"
     printf '  "model": "%s",\n' "$(json_escape "${MODEL:-}")"
     printf '  "phone_set": %s,\n' "$([[ -n ${PHONE:-} ]] && echo true || echo false)"
     printf '  "ports": {"bridge": %s, "core": %s},\n' "${BRIDGE_PORT_VALUE:-0}" "${CORE_PORT_VALUE:-0}"
@@ -192,14 +199,20 @@ usage() {
 Uso: sudo ./install.sh [opciones]
 
   --phone NUM        número de WhatsApp autorizado (E.164)
-  --model NAME       modelo de Ollama (por defecto deepseek-v4.1-flash:cloud)
-  --yes              no preguntar (usa --phone/--model o los valores por defecto)
-  --skip-signin      no ejecutar `ollama signin`
+  --model NAME       modelo (Ollama o alias de Claude; vacío = predeterminado)
+  --provider NAME    claude-subscription | claude-api | ollama-cloud | ollama-local | custom
+  --yes              no preguntar (usa las variables de entorno de abajo)
+  --skip-signin      no iniciar sesión en Ollama
   --skip-pair        no emparejar WhatsApp ahora
   --update           actualizar código y reiniciar (conserva la configuración)
   --uninstall        detener y quitar los servicios
   --purge            con --uninstall: borra también datos y usuario iris
   --help             esta ayuda
+
+Variables para modo no interactivo:
+  IRIS_PROVIDER, IRIS_PHONE, IRIS_MODEL,
+  IRIS_OAUTH_TOKEN (suscripción), IRIS_ANTHROPIC_KEY (API de Claude),
+  IRIS_OLLAMA_KEY (Ollama Cloud), IRIS_CUSTOM_BASE / IRIS_CUSTOM_TOKEN
 EOF
 }
 
@@ -207,6 +220,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --phone) PHONE="${2:-}"; shift 2 ;;
     --model) MODEL="${2:-}"; shift 2 ;;
+    --provider) PROVIDER="${2:-}"; shift 2 ;;
     --yes|-y) ASSUME_YES=1; shift ;;
     --skip-signin) SKIP_SIGNIN=1; shift ;;
     --skip-pair) SKIP_PAIR=1; shift ;;
@@ -297,12 +311,126 @@ fi
 
 # ── Preguntas ──────────────────────────────────────────────────────────────
 
+read_secret() {
+  local __var=$1 __prompt=$2 __value=""
+  read -rsp "$__prompt: " __value </dev/tty || true
+  echo
+  printf -v "$__var" '%s' "$__value"
+}
+
+provider_label() {
+  case "$1" in
+    claude-subscription) echo "Claude (suscripción Pro/Max/Team)" ;;
+    claude-api) echo "Claude (clave de API)" ;;
+    ollama-cloud) echo "Ollama Cloud (API directa, sin Ollama local)" ;;
+    ollama-local) echo "Ollama Cloud (Ollama local)" ;;
+    custom) echo "Otro endpoint compatible con Anthropic" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+choose_provider() {
+  if [[ -n $PROVIDER ]]; then
+    case $PROVIDER in
+      claude-subscription|claude-api|ollama-cloud|ollama-local|custom) return 0 ;;
+      *) die "Proveedor no válido: $PROVIDER" ;;
+    esac
+  fi
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    PROVIDER=ollama-local
+    return 0
+  fi
+  echo
+  log "¿Cómo quieres conectar el modelo de Iris?"
+  dim "  1) Claude — suscripción Pro/Max/Team (token por navegador)"
+  dim "  2) Claude — clave de API (console.anthropic.com)"
+  dim "  3) Ollama Cloud — clave de API, sin instalar Ollama"
+  dim "  4) Ollama Cloud — Ollama local (instala y firma)"
+  dim "  5) Otro endpoint compatible con Anthropic"
+  local choice=""
+  read -rp "Elige [1-5] (por defecto 3): " choice </dev/tty || true
+  case "${choice:-3}" in
+    1) PROVIDER=claude-subscription ;;
+    2) PROVIDER=claude-api ;;
+    3) PROVIDER=ollama-cloud ;;
+    4) PROVIDER=ollama-local ;;
+    5) PROVIDER=custom ;;
+    *) die "Opción no válida." ;;
+  esac
+}
+
+collect_provider_config() {
+  case $PROVIDER in
+    claude-subscription)
+      if [[ -z $MODEL ]]; then
+        ask MODEL "Modelo (vacío = el de Claude Code; alias: sonnet, opus, haiku)" ""
+      fi
+      ;;
+    claude-api)
+      if [[ -z $ANTHROPIC_KEY ]]; then
+        read_secret ANTHROPIC_KEY "Clave API de Anthropic (sk-ant-api...)"
+      fi
+      [[ -n $ANTHROPIC_KEY ]] || die "Necesito la clave de Anthropic."
+      if [[ -z $MODEL ]]; then
+        ask MODEL "Modelo (vacío = el de Claude Code; alias: sonnet, opus, haiku)" ""
+      fi
+      ;;
+    ollama-cloud)
+      if [[ -z $OLLAMA_KEY ]]; then
+        read_secret OLLAMA_KEY "Clave API de Ollama (ollama.com/settings/keys)"
+      fi
+      [[ -n $OLLAMA_KEY ]] || die "Necesito la clave de Ollama."
+      if [[ -z $MODEL ]]; then
+        ask MODEL "Modelo de Ollama" "$DEFAULT_MODEL"
+      fi
+      [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+      ;;
+    ollama-local)
+      if [[ -z $MODEL ]]; then
+        ask MODEL "Modelo de Ollama" "$DEFAULT_MODEL"
+      fi
+      [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+      ;;
+    custom)
+      if [[ -z $CUSTOM_BASE ]]; then
+        ask CUSTOM_BASE "URL base compatible con Anthropic" ""
+      fi
+      [[ $CUSTOM_BASE =~ ^https?:// ]] || die "URL no válida."
+      if [[ -z $CUSTOM_TOKEN ]]; then
+        read_secret CUSTOM_TOKEN "Token del endpoint"
+      fi
+      [[ -n $CUSTOM_TOKEN ]] || die "Necesito el token del endpoint."
+      if [[ -z $MODEL ]]; then
+        ask MODEL "Modelo" ""
+      fi
+      [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
+      ;;
+    *) die "Proveedor no válido: $PROVIDER" ;;
+  esac
+}
+
+infer_provider_from_env() {
+  if [[ -n ${IRIS_PROVIDER:-} ]]; then printf '%s' "$IRIS_PROVIDER"; return; fi
+  if [[ -n ${CLAUDE_CODE_OAUTH_TOKEN:-} ]]; then printf 'claude-subscription'; return; fi
+  case "${ANTHROPIC_BASE_URL:-}" in
+    https://ollama.com*) printf 'ollama-cloud'; return ;;
+    http://127.0.0.1:11434*|http://localhost:11434*) printf 'ollama-local'; return ;;
+    "") : ;;
+    *) printf 'custom'; return ;;
+  esac
+  if [[ -n ${ANTHROPIC_API_KEY:-} ]]; then printf 'claude-api'; return; fi
+  printf 'ollama-local'
+}
+
 if [[ $MODE == update ]]; then
   [[ -f $ENV_FILE ]] || die "No hay instalación previa ($ENV_FILE no existe)."
   # shellcheck disable=SC1090
   . "$ENV_FILE"
   PHONE="${IRIS_PHONE:-$PHONE}"
   MODEL="${IRIS_MODEL:-$MODEL}"
+  if [[ -z $PROVIDER ]]; then
+    PROVIDER="$(infer_provider_from_env)"
+  fi
   SKIP_SIGNIN=1
   SKIP_PAIR=1
   log "Modo actualización: se conserva la configuración."
@@ -312,17 +440,16 @@ else
     PHONE="${PHONE//[[:space:]]/}"
     [[ $PHONE =~ ^\+?[0-9]{8,15}$ ]] || die "Número no válido: $PHONE"
   fi
-  if [[ -z $MODEL ]]; then
-    ask MODEL "Modelo de Ollama" "$DEFAULT_MODEL"
-    [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
-  fi
+  choose_provider
+  collect_provider_config
   echo
   log "Resumen de la instalación:"
-  dim "  Número:  $PHONE"
-  dim "  Modelo:  $MODEL"
-  dim "  Usuario: $IRIS_USER"
-  dim "  Código:  $APP_DIR"
-  dim "  Datos:   $DATA_DIR"
+  dim "  Número:    $PHONE"
+  dim "  Proveedor: $(provider_label "$PROVIDER")"
+  dim "  Modelo:    ${MODEL:-(predeterminado del proveedor)}"
+  dim "  Usuario:   $IRIS_USER"
+  dim "  Código:    $APP_DIR"
+  dim "  Datos:     $DATA_DIR"
   echo
   confirm "¿Continuar?" || { log "Cancelado."; exit 0; }
 fi
@@ -394,18 +521,23 @@ ok "Claude Code listo ($CLAUDE_BIN)"
 
 # ── Ollama ──────────────────────────────────────────────────────────────────
 
-if ! command -v ollama >/dev/null; then
-  dim "  La descarga de Ollama puede tardar varios minutos."
-  if ! run_logged "Instalando Ollama" bash -c 'set -o pipefail; curl -fsSL https://ollama.com/install.sh | sh'; then
-    die "Falló el instalador oficial de Ollama. Revisa $INSTALL_LOG.
+OLLAMA_BIN=""
+if [[ $PROVIDER == ollama-local ]]; then
+  if ! command -v ollama >/dev/null; then
+    dim "  La descarga de Ollama puede tardar varios minutos."
+    if ! run_logged "Instalando Ollama" bash -c 'set -o pipefail; curl -fsSL https://ollama.com/install.sh | sh'; then
+      die "Falló el instalador oficial de Ollama. Revisa $INSTALL_LOG.
 Pista: en WSL suele faltar zstd (sudo apt-get install -y zstd)."
+    fi
   fi
+  OLLAMA_BIN="$(command -v ollama || true)"
+  [[ -n $OLLAMA_BIN ]] || die "Ollama no quedó instalado."
+  # El instalador oficial crea un servicio del sistema; usaremos uno propio como iris.
+  systemctl disable --now ollama.service 2>/dev/null || true
+  ok "Ollama listo ($OLLAMA_BIN)"
+else
+  log "Ollama local no hace falta: $(provider_label "$PROVIDER")."
 fi
-OLLAMA_BIN="$(command -v ollama || true)"
-[[ -n $OLLAMA_BIN ]] || die "Ollama no quedó instalado."
-# El instalador oficial crea un servicio del sistema; usaremos uno propio como iris.
-systemctl disable --now ollama.service 2>/dev/null || true
-ok "Ollama listo ($OLLAMA_BIN)"
 
 # ── Usuario y carpetas ──────────────────────────────────────────────────────
 
@@ -435,6 +567,22 @@ JSON
   chmod 0600 "$CLAUDE_JSON"
 fi
 ok "Usuario y carpetas listos."
+
+if [[ $PROVIDER == claude-subscription && -z $OAUTH_TOKEN ]]; then
+  log "Autorización de Claude (suscripción)"
+  dim "Se abrirá el navegador. Autoriza y copia el token que se imprima."
+  TOKEN_OUT="$(mktemp)"
+  sudo -u "$IRIS_USER" -H "$CLAUDE_BIN" setup-token </dev/tty 2>&1 \
+    | tee "$TOKEN_OUT" || true
+  OAUTH_TOKEN="$(grep -oE 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]+' "$TOKEN_OUT" | tail -1)"
+  rm -f "$TOKEN_OUT"
+  if [[ -z $OAUTH_TOKEN ]]; then
+    warn "No pude capturar el token automáticamente."
+    read_secret OAUTH_TOKEN "Pega el token (sk-ant-oat01-...)"
+  fi
+  [[ -n $OAUTH_TOKEN ]] || die "No obtuve el token de la suscripción."
+  ok "Token de suscripción guardado."
+fi
 
 # ── Respaldo antes de tocar el código ───────────────────────────────────────
 
@@ -481,10 +629,12 @@ ok "Código instalado."
 
 # ── Configuración ───────────────────────────────────────────────────────────
 
-TOKEN=""
+TOKEN="${IRIS_BRIDGE_TOKEN:-}"
 SOURCE_DIR_TO_SAVE="$SRC_DIR"
 if [[ -f $ENV_FILE ]]; then
-  TOKEN="$(sed -n 's/^IRIS_BRIDGE_TOKEN=//p' "$ENV_FILE" | head -n1)"
+  if [[ -z $TOKEN ]]; then
+    TOKEN="$(sed -n 's/^IRIS_BRIDGE_TOKEN=//p' "$ENV_FILE" | head -n1)"
+  fi
   EXISTING_SRC="$(sed -n 's/^IRIS_SOURCE_DIR=//p' "$ENV_FILE" | head -n1)"
   if [[ $MODE == update && -n $EXISTING_SRC \
         && "$(readlink -f "$SRC_DIR")" == "$(readlink -f "$APP_DIR")" ]]; then
@@ -524,107 +674,166 @@ if [[ "$CORE_PORT_VALUE" != "3004" ]]; then
   warn "El puerto 3004 está ocupado; usaré $CORE_PORT_VALUE para el núcleo."
 fi
 
-umask 077
-cat > "$ENV_FILE" <<EOF
-# Iris Agent — configuración (generada por install.sh)
-IRIS_PHONE=$PHONE
-IRIS_MODEL=$MODEL
-IRIS_WORKSPACE=$IRIS_HOME/workspace
-IRIS_DATA=$DATA_DIR
-IRIS_WA_SESSION=$DATA_DIR/whatsapp-session
-IRIS_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT_VALUE
-IRIS_BRIDGE_PORT=$BRIDGE_PORT_VALUE
-IRIS_CORE_URL=http://127.0.0.1:$CORE_PORT_VALUE
-IRIS_BRIDGE_TOKEN=$TOKEN
-IRIS_CORE_BIND=127.0.0.1
-IRIS_CORE_PORT=$CORE_PORT_VALUE
-IRIS_CLAUDE_BIN=$CLAUDE_BIN
-IRIS_CLAUDE_TIMEOUT=1800
-IRIS_PERMISSION_MODE=bypassPermissions
-IRIS_MAX_CHARS=4000
-IRIS_SOURCE_DIR=$SOURCE_DIR_TO_SAVE
-IRIS_REPO_URL=${IRIS_REPO_URL:-$REPO_URL_DEFAULT}
-IRIS_REPO_REF=${IRIS_REPO_REF:-$REPO_REF_DEFAULT}
-ANTHROPIC_BASE_URL=http://127.0.0.1:11434
-ANTHROPIC_AUTH_TOKEN=ollama
-EOF
-umask 022
-chown root:"$IRIS_USER" "$ENV_FILE"
-chmod 0640 "$ENV_FILE"
-ok "Configuración en $ENV_FILE"
+if [[ $MODE != update ]]; then
+  umask 077
+  {
+    echo "# Iris Agent — configuración (generada por install.sh)"
+    echo "IRIS_PHONE=$PHONE"
+    echo "IRIS_PROVIDER=$PROVIDER"
+    echo "IRIS_MODEL=$MODEL"
+    echo "IRIS_WORKSPACE=$IRIS_HOME/workspace"
+    echo "IRIS_DATA=$DATA_DIR"
+    echo "IRIS_WA_SESSION=$DATA_DIR/whatsapp-session"
+    echo "IRIS_BRIDGE_URL=http://127.0.0.1:$BRIDGE_PORT_VALUE"
+    echo "IRIS_BRIDGE_PORT=$BRIDGE_PORT_VALUE"
+    echo "IRIS_CORE_URL=http://127.0.0.1:$CORE_PORT_VALUE"
+    echo "IRIS_BRIDGE_TOKEN=$TOKEN"
+    echo "IRIS_CORE_BIND=127.0.0.1"
+    echo "IRIS_CORE_PORT=$CORE_PORT_VALUE"
+    echo "IRIS_CLAUDE_BIN=$CLAUDE_BIN"
+    echo "IRIS_CLAUDE_TIMEOUT=1800"
+    echo "IRIS_PERMISSION_MODE=bypassPermissions"
+    echo "IRIS_MAX_CHARS=4000"
+    echo "IRIS_SOURCE_DIR=$SOURCE_DIR_TO_SAVE"
+    echo "IRIS_REPO_URL=${IRIS_REPO_URL:-$REPO_URL_DEFAULT}"
+    echo "IRIS_REPO_REF=${IRIS_REPO_REF:-$REPO_REF_DEFAULT}"
+    case $PROVIDER in
+      claude-subscription)
+        echo "CLAUDE_CODE_OAUTH_TOKEN=$OAUTH_TOKEN"
+        ;;
+      claude-api)
+        echo "ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
+        ;;
+      ollama-cloud)
+        echo "ANTHROPIC_BASE_URL=https://ollama.com"
+        echo "ANTHROPIC_AUTH_TOKEN=$OLLAMA_KEY"
+        echo "ANTHROPIC_API_KEY="
+        ;;
+      ollama-local)
+        echo "ANTHROPIC_BASE_URL=http://127.0.0.1:11434"
+        echo "ANTHROPIC_AUTH_TOKEN=ollama"
+        echo "ANTHROPIC_API_KEY="
+        ;;
+      custom)
+        echo "ANTHROPIC_BASE_URL=$CUSTOM_BASE"
+        echo "ANTHROPIC_AUTH_TOKEN=$CUSTOM_TOKEN"
+        echo "ANTHROPIC_API_KEY="
+        ;;
+    esac
+  } >"$ENV_FILE"
+  umask 022
+  chown root:"$IRIS_USER" "$ENV_FILE"
+  chmod 0640 "$ENV_FILE"
+  ok "Configuración en $ENV_FILE"
+else
+  log "Modo actualización: se conserva $ENV_FILE"
+fi
 
 # ── Servicios ──────────────────────────────────────────────────────────────
 
 log "Instalando servicios systemd…"
-install -m 0644 "$SRC_DIR/systemd/iris-ollama.service" /etc/systemd/system/iris-ollama.service
 install -m 0644 "$SRC_DIR/systemd/iris-bridge.service" /etc/systemd/system/iris-bridge.service
 install -m 0644 "$SRC_DIR/systemd/iris-core.service" /etc/systemd/system/iris-core.service
+ENABLE_UNITS=(iris-bridge.service iris-core.service)
+if [[ $PROVIDER == ollama-local ]]; then
+  install -m 0644 "$SRC_DIR/systemd/iris-ollama.service" /etc/systemd/system/iris-ollama.service
+  ENABLE_UNITS+=(iris-ollama.service)
+else
+  systemctl disable --now iris-ollama.service 2>/dev/null || true
+  rm -f /etc/systemd/system/iris-ollama.service
+fi
 systemctl daemon-reload
-systemctl enable iris-ollama.service iris-bridge.service iris-core.service >/dev/null
+systemctl enable "${ENABLE_UNITS[@]}" >/dev/null
 ok "Servicios instalados."
 
 # ── Ollama: arranque y sesión ───────────────────────────────────────────────
 
-systemctl restart iris-ollama.service
-sleep 1
-systemctl is-active --quiet iris-ollama.service \
-  || die "Ollama no arrancó (¿puerto 11434 ocupado?). Revisa: journalctl -u iris-ollama -n 50"
-for _ in $(seq 1 30); do
-  curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+SIGNIN_OK=1
+if [[ $PROVIDER == ollama-local ]]; then
+  systemctl restart iris-ollama.service
   sleep 1
-done
-curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 \
-  || die "Ollama no responde. Revisa: journalctl -u iris-ollama -n 50"
-
-SIGNIN_OK=0
-if [[ $SKIP_SIGNIN -eq 0 ]]; then
-  echo
-  log "Sesión de Ollama Cloud"
-  dim "Se abrirá una URL. Ábrela en el navegador, autoriza y vuelve aquí."
-  # </dev/tty es imprescindible: bajo `curl | bash` el stdin es el script y
-  # `ollama signin` imprimiría la URL y saldría sin esperar la autorización.
-  sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" signin </dev/tty || true
-
-  SIGNIN_OUT="$(mktemp)"
-  for _ in 1 2 3 4 5; do
-    if timeout 180 sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" run "$MODEL" "Responde solo: OK" \
-         >"$SIGNIN_OUT" 2>&1 \
-       && ! grep -qiE "need to be signed in|sign in was cancelled|failed to sign in" "$SIGNIN_OUT"; then
-      SIGNIN_OK=1
-      ok "Sesión de Ollama verificada."
-      break
-    fi
-    warn "Aún no puedo usar $MODEL (sesión sin completar o modelo no disponible)."
-    dim "  Si la URL caducó, ejecuta en otra terminal:  sudo -u iris -H ollama signin"
-    [[ $ASSUME_YES -eq 1 ]] && break
-    read -rp "Completa el inicio de sesión y pulsa Enter para reintentar (o escribe 'saltar'): " answer </dev/tty || true
-    [[ "${answer:-}" == "saltar" ]] && break
+  systemctl is-active --quiet iris-ollama.service \
+    || die "Ollama no arrancó (¿puerto 11434 ocupado?). Revisa: journalctl -u iris-ollama -n 50"
+  for _ in $(seq 1 30); do
+    curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 && break
+    sleep 1
   done
-  rm -f "$SIGNIN_OUT"
-fi
+  curl -fsS http://127.0.0.1:11434/api/tags >/dev/null 2>&1 \
+    || die "Ollama no responde. Revisa: journalctl -u iris-ollama -n 50"
 
-if ! run_logged "Verificando modelo $MODEL" \
-    sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" pull "$MODEL"; then
-  warn "No pude descargar/verificar '$MODEL'. Se intentará al primer uso."
+  SIGNIN_OK=0
+  if [[ $SKIP_SIGNIN -eq 0 ]]; then
+    echo
+    log "Sesión de Ollama Cloud"
+    dim "Se abrirá una URL. Ábrela en el navegador, autoriza y vuelve aquí."
+    # </dev/tty es imprescindible: bajo `curl | bash` el stdin es el script y
+    # `ollama signin` imprimiría la URL y saldría sin esperar la autorización.
+    sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" signin </dev/tty || true
+
+    SIGNIN_OUT="$(mktemp)"
+    for _ in 1 2 3 4 5; do
+      if timeout 180 sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" run "$MODEL" "Responde solo: OK" \
+           >"$SIGNIN_OUT" 2>&1 \
+         && ! grep -qiE "need to be signed in|sign in was cancelled|failed to sign in" "$SIGNIN_OUT"; then
+        SIGNIN_OK=1
+        ok "Sesión de Ollama verificada."
+        break
+      fi
+      warn "Aún no puedo usar $MODEL (sesión sin completar o modelo no disponible)."
+      dim "  Si la URL caducó, ejecuta en otra terminal:  sudo -u iris -H ollama signin"
+      [[ $ASSUME_YES -eq 1 ]] && break
+      read -rp "Completa el inicio de sesión y pulsa Enter para reintentar (o escribe 'saltar'): " answer </dev/tty || true
+      [[ "${answer:-}" == "saltar" ]] && break
+    done
+    rm -f "$SIGNIN_OUT"
+  fi
+
+  if ! run_logged "Verificando modelo $MODEL" \
+      sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" pull "$MODEL"; then
+    warn "No pude descargar/verificar '$MODEL'. Se intentará al primer uso."
+  fi
+
+  if [[ $SKIP_SIGNIN -eq 0 && $SIGNIN_OK -eq 0 ]]; then
+    warn "Seguimos sin sesión verificada de Ollama. Iris no podrá responder hasta que la completes:"
+    dim "  sudo -u iris -H ollama signin"
+  fi
+else
+  log "Modelo: $(provider_label "$PROVIDER")${MODEL:+ ($MODEL)}."
 fi
 
 if [[ $SIGNIN_OK -eq 1 ]]; then
-  log "Prueba rápida de Claude Code con $MODEL (puede tardar)…"
-  if timeout 180 sudo -u "$IRIS_USER" -H bash -c \
-      ". '$ENV_FILE'; cd '$IRIS_HOME/workspace'; exec '$CLAUDE_BIN' -p 'Responde solo: OK' --output-format json --model '$MODEL' --dangerously-skip-permissions" \
-      >/tmp/iris-test.json 2>/tmp/iris-test.err; then
-    ok "Claude Code respondió."
+  log "Prueba rápida de Claude Code${MODEL:+ con $MODEL}…"
+  TEST_SCRIPT="$(mktemp)"
+  {
+    echo '#!/usr/bin/env bash'
+    echo ". '$ENV_FILE'"
+    echo "cd '$IRIS_HOME/workspace'"
+    if [[ -n $MODEL ]]; then
+      printf "exec '%s' -p 'Responde solo: OK' --output-format json --model '%s' --dangerously-skip-permissions\n" \
+        "$CLAUDE_BIN" "$MODEL"
+    else
+      printf "exec '%s' -p 'Responde solo: OK' --output-format json --dangerously-skip-permissions\n" \
+        "$CLAUDE_BIN"
+    fi
+  } >"$TEST_SCRIPT"
+  chmod 0700 "$TEST_SCRIPT"
+  chown "$IRIS_USER":"$IRIS_USER" "$TEST_SCRIPT"
+
+  if timeout 180 sudo -u "$IRIS_USER" -H bash "$TEST_SCRIPT" >/tmp/iris-test.json 2>/tmp/iris-test.err; then
+    if grep -qE '"is_error"[[:space:]]*:[[:space:]]*true|"type"[[:space:]]*:[[:space:]]*"error"' /tmp/iris-test.json \
+       || ! grep -qE '"session_id"|"result"' /tmp/iris-test.json; then
+      warn "Claude respondió con un error inesperado:"
+      sed -n '1,5p' /tmp/iris-test.json
+    else
+      ok "Claude Code respondió."
+    fi
     rm -f /tmp/iris-test.json /tmp/iris-test.err
   else
     warn "La prueba con Claude falló. Revisa:"
     sed -n '1,6p' /tmp/iris-test.err 2>/dev/null || true
-    dim "Puede faltar: ollama signin, un modelo válido o permisos."
+    dim "Revisa las credenciales del proveedor o el modelo elegido."
   fi
-fi
-
-if [[ $SKIP_SIGNIN -eq 0 && $SIGNIN_OK -eq 0 ]]; then
-  warn "Seguimos sin sesión verificada de Ollama. Iris no podrá responder hasta que la completes:"
-  dim "  sudo -u iris -H ollama signin"
+  rm -f "$TEST_SCRIPT"
 fi
 
 # ── Pareo de WhatsApp ───────────────────────────────────────────────────────
@@ -682,7 +891,11 @@ write_state success "signin_ok=$SIGNIN_OK skip_signin=$SKIP_SIGNIN skip_pair=$SK
 
 echo
 ok "Iris quedó instalado."
-dim "  Servicios:  iris-ollama  iris-bridge  iris-core"
+if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
+  dim "  Servicios:  iris-ollama  iris-bridge  iris-core"
+else
+  dim "  Servicios:  iris-bridge  iris-core"
+fi
 dim "  Config:     $ENV_FILE"
 dim "  Datos:      $DATA_DIR"
 dim "  Workspace:  $IRIS_HOME/workspace"

@@ -20,7 +20,12 @@ WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token──► iris-c
 - Linux con **systemd** (Ubuntu/Debian). WSL sirve para pruebas.
 - Acceso `sudo`.
 - Un número de WhatsApp dedicado (recomendado) para el bot.
-- Cuenta de Ollama Cloud (o cambiar `ANTHROPIC_BASE_URL` por otra API compatible).
+- Una forma de acceso al modelo:
+  - suscripción de Claude (Pro/Max/Team),
+  - clave de API de Anthropic,
+  - clave de API de Ollama Cloud (sin instalar Ollama),
+  - Ollama local con cuenta de Ollama Cloud,
+  - otro endpoint compatible con la API de Anthropic.
 
 ## Instalación
 
@@ -30,12 +35,30 @@ WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token──► iris-c
 curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh | sudo bash
 ```
 
-Con parámetros (sin preguntas):
+El instalador pregunta tu número y **cómo conectar el modelo**:
 
-```bash
-curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh \
-  | sudo bash -s -- --phone +573001112233 --model deepseek-v4.1-flash:cloud
 ```
+1) Claude — suscripción Pro/Max/Team (token por navegador)
+2) Claude — clave de API (console.anthropic.com)
+3) Ollama Cloud — clave de API, sin instalar Ollama
+4) Ollama Cloud — Ollama local (instala y firma)
+5) Otro endpoint compatible con Anthropic
+```
+
+Según la opción:
+
+| Opción | Qué hace |
+|---|---|
+| 1 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
+| 2 | Pide la clave `sk-ant-api...` (sin mostrarla) |
+| 3 | Usa `https://ollama.com` con tu clave; **no instala Ollama** |
+| 4 | Instala Ollama, hace `ollama signin` y usa el daemon local |
+| 5 | Pide URL base, token y modelo |
+
+Después crea el usuario **`iris`** y las carpetas (`/opt/iris`,
+`/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), empareja
+WhatsApp con QR, deja activos `iris-bridge` e `iris-core` (y `iris-ollama`
+solo con la opción 4) y envía un mensaje de prueba.
 
 **Desde una copia local:**
 
@@ -44,25 +67,21 @@ cd Iris-agent
 sudo bash install.sh
 ```
 
-El instalador pregunta el número autorizado y el modelo (sugiere
-`deepseek-v4.1-flash:cloud`), y hace todo:
-
-1. Instala Node.js 22, Claude Code y Ollama.
-2. Crea el usuario **`iris`** (sin sudo) y las carpetas:
-   - `/opt/iris` — código (solo lectura para `iris`)
-   - `/etc/iris/iris.env` — configuración y token
-   - `/var/lib/iris` — cola SQLite, sesión de WhatsApp, adjuntos
-   - `/home/iris/workspace` — proyectos que Claude puede tocar
-3. Inicia sesión en Ollama Cloud (`ollama signin`, una sola vez).
-4. Empareja WhatsApp mostrando el QR en la terminal.
-5. Deja activos los servicios `iris-ollama`, `iris-bridge` e `iris-core`.
-6. Envía un mensaje de prueba a tu WhatsApp.
-
-Sin preguntas:
+**Sin preguntas** (las claves van por variables de entorno, no por argumentos):
 
 ```bash
-sudo bash install.sh --phone +573001112233 --model deepseek-v4.1-flash:cloud --yes
+export IRIS_PROVIDER=ollama-cloud
+export IRIS_OLLAMA_KEY=...
+export IRIS_PHONE=+573001112233
+export IRIS_MODEL=deepseek-v4.1-flash:cloud
+curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh \
+  | sudo -E bash -s -- --yes
 ```
+
+Valores de `IRIS_PROVIDER`: `claude-subscription`, `claude-api`,
+`ollama-cloud`, `ollama-local`, `custom`. Para la suscripción se puede pasar
+`IRIS_OAUTH_TOKEN`; para Claude API, `IRIS_ANTHROPIC_KEY`; para un endpoint
+propio, `IRIS_CUSTOM_BASE` e `IRIS_CUSTOM_TOKEN`.
 
 ## Uso por WhatsApp
 

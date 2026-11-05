@@ -42,8 +42,13 @@ svc_state() { systemctl is-active "$1" 2>/dev/null || true; }
 
 cmd_status() {
   load_env
+  local units=(iris-bridge iris-core)
+  if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
+    units=(iris-ollama "${units[@]}")
+  fi
+  echo "Proveedor: ${IRIS_PROVIDER:-?}${IRIS_MODEL:+ · modelo $IRIS_MODEL}"
   echo "Servicios:"
-  for svc in iris-ollama iris-bridge iris-core; do
+  for svc in "${units[@]}"; do
     printf '  %-14s %s\n' "$svc" "$(svc_state "$svc")"
   done
   local core_json bridge_json
@@ -118,7 +123,11 @@ cmd_model() {
 
 cmd_restart() {
   info "Reiniciando servicios…"
-  as_root systemctl restart iris-ollama.service iris-bridge.service iris-core.service
+  local units=(iris-bridge.service iris-core.service)
+  if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
+    units=(iris-ollama.service "${units[@]}")
+  fi
+  as_root systemctl restart "${units[@]}"
   sleep 2
   cmd_status
 }
@@ -145,8 +154,9 @@ cmd_doctor() {
   printf 'Sistema:        %s\n' "$(uname -sr)"
   printf 'Node:           %s\n' "$(node -v 2>/dev/null || echo 'no encontrado')"
   printf 'Claude Code:    %s\n' "$(claude --version 2>/dev/null | head -n1 || echo 'no encontrado')"
-  printf 'Ollama:         %s\n' "$(ollama --version 2>/dev/null | head -n1 || echo 'no encontrado')"
-  printf 'Modelo config.: %s\n' "$IRIS_MODEL"
+  printf 'Ollama:         %s\n' "$(ollama --version 2>/dev/null | head -n1 || echo 'no instalado')"
+  printf 'Proveedor:      %s\n' "${IRIS_PROVIDER:-?}"
+  printf 'Modelo config.: %s\n' "${IRIS_MODEL:-(predeterminado del proveedor)}"
   printf 'Disco libre:    %s\n' "$(df -h / | awk 'NR==2 {print $4}')"
   printf 'Memoria libre:  %s\n' "$(free -h | awk '/^Mem:/ {print $7}')"
   echo
@@ -172,11 +182,17 @@ PY
     echo "Instalación: (sin recibo)"
   fi
   echo
-  printf 'Ollama API:     '; curl -fsS -m 3 http://127.0.0.1:11434/api/tags >/dev/null && echo OK || echo FALLA
+  if [[ ${IRIS_PROVIDER:-} == ollama-local ]]; then
+    printf 'Ollama API:     '; curl -fsS -m 3 http://127.0.0.1:11434/api/tags >/dev/null && echo OK || echo FALLA
+  fi
   printf 'Núcleo:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_CORE_PORT}/health" >/dev/null && echo OK || echo FALLA
   printf 'Puente:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" >/dev/null && echo OK || echo FALLA
   echo
-  for svc in iris-ollama iris-bridge iris-core; do
+  local units=(iris-bridge iris-core)
+  if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
+    units=(iris-ollama "${units[@]}")
+  fi
+  for svc in "${units[@]}"; do
     printf '%-14s %s\n' "$svc" "$(svc_state "$svc")"
   done
   echo

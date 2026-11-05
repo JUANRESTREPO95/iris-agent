@@ -23,6 +23,7 @@ def _env(name: str, default: str = "") -> str:
 @dataclass(frozen=True)
 class Config:
     phone: str
+    provider: str
     model: str
     workspace: Path
     data_dir: Path
@@ -40,7 +41,8 @@ class Config:
 def load() -> Config:
     return Config(
         phone=_env("IRIS_PHONE"),
-        model=_env("IRIS_MODEL", "deepseek-v4.1-flash:cloud"),
+        provider=_env("IRIS_PROVIDER", "ollama-local"),
+        model=_env("IRIS_MODEL"),
         workspace=Path(_env("IRIS_WORKSPACE", "/home/iris/workspace")).expanduser(),
         data_dir=Path(_env("IRIS_DATA", "/var/lib/iris")).expanduser(),
         bridge_url=_env("IRIS_BRIDGE_URL", "http://127.0.0.1:3003").rstrip("/"),

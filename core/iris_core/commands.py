@@ -58,12 +58,12 @@ def handle(cfg: Config, db: DB, worker: Worker, chat_id: str, text: str) -> str:
 
     if command in {"modelo", "model"}:
         if not arg:
-            current = chat.get("model") or cfg.model
+            current = chat.get("model") or cfg.model or "(predeterminado del proveedor)"
             source = "del chat" if chat.get("model") else "predeterminado"
             return f"Modelo: *{current}* ({source})."
         if arg.lower() in {"default", "predeterminado", "reset"}:
             db.set_model(chat_id, None)
-            return f"Modelo restablecido a *{cfg.model}*."
+            return f"Modelo restablecido a *{cfg.model or 'predeterminado del proveedor'}*."
         if not MODEL_RE.match(arg):
             return "Nombre de modelo no válido."
         db.set_model(chat_id, arg)
@@ -76,8 +76,9 @@ def handle(cfg: Config, db: DB, worker: Worker, chat_id: str, text: str) -> str:
         session = db.get_session(chat_id, project)
         lines = [
             "*Estado de Iris*",
+            f"• Proveedor: {cfg.provider}",
             f"• Proyecto: {project}",
-            f"• Modelo: {model}",
+            f"• Modelo: {model or '(predeterminado del proveedor)'}",
             f"• Sesión: {session[:8] if session else 'nueva'}",
             f"• Cola: {status['queue']}",
         ]

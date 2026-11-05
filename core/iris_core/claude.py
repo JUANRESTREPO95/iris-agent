@@ -40,9 +40,9 @@ def build_command(
         prompt,
         "--output-format",
         "json",
-        "--model",
-        model,
     ]
+    if model:
+        cmd += ["--model", model]
     if cfg.permission_mode == "bypassPermissions":
         cmd.append("--dangerously-skip-permissions")
     elif cfg.permission_mode in {"acceptEdits", "plan", "default"}:
@@ -90,11 +90,17 @@ def run(
     started = time.time()
     cmd = build_command(cfg, prompt, model, session_id, is_new)
     env = os.environ.copy()
-    env["ANTHROPIC_MODEL"] = model
+    env.pop("ANTHROPIC_MODEL", None)
+    if model:
+        env["ANTHROPIC_MODEL"] = model
     env.setdefault("HOME", "/home/iris")
     env.setdefault("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
 
-    log.info("lanzando claude (%s, sesión %s)", model, "nueva" if is_new else session_id[:8])
+    log.info(
+        "lanzando claude (%s, sesión %s)",
+        model or "modelo predeterminado",
+        "nueva" if is_new else session_id[:8],
+    )
     try:
         proc = subprocess.Popen(
             cmd,
