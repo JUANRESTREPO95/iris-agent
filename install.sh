@@ -238,7 +238,7 @@ Uso: sudo ./install.sh [opciones]
 
   --phone NUM        número de WhatsApp autorizado (E.164)
   --model NAME       modelo (Ollama o alias de Claude; vacío = predeterminado)
-  --provider NAME    claude-subscription | claude-api | ollama-cloud | ollama-local | custom
+  --provider NAME    ollama-local | claude-subscription | claude-api | custom
   --yes              no preguntar (usa las variables de entorno de abajo)
   --skip-signin      no iniciar sesión en Ollama
   --skip-pair        no emparejar WhatsApp ahora
@@ -250,7 +250,7 @@ Uso: sudo ./install.sh [opciones]
 Variables para modo no interactivo:
   IRIS_PROVIDER, IRIS_PHONE, IRIS_MODEL,
   IRIS_OAUTH_TOKEN (suscripción), IRIS_ANTHROPIC_KEY (API de Claude),
-  IRIS_OLLAMA_KEY (Ollama Cloud), IRIS_CUSTOM_BASE / IRIS_CUSTOM_TOKEN
+  IRIS_CUSTOM_BASE / IRIS_CUSTOM_TOKEN
 EOF
 }
 
@@ -407,6 +407,46 @@ ui_menu() {
   printf '%s' "${tags[$((choice - 1))]}"
 }
 
+ui_input() {
+  local __var=$1 __prompt=$2 __default=${3:-} __value=""
+  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
+    __value="$(whiptail --title "Iris — instalación" --inputbox "$__prompt" 10 76 "$__default" \
+      3>&1 1>&2 2>&3 </dev/tty)" || return 1
+  else
+    ask __value "$__prompt" "$__default"
+  fi
+  printf -v "$__var" '%s' "$__value"
+}
+
+ui_password() {
+  local __var=$1 __prompt=$2 __value=""
+  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
+    __value="$(whiptail --title "Iris — credenciales" --passwordbox "$__prompt" 10 76 \
+      3>&1 1>&2 2>&3 </dev/tty)" || return 1
+  else
+    read_secret __value "$__prompt"
+  fi
+  printf -v "$__var" '%s' "$__value"
+}
+
+ui_yesno() {
+  local prompt="$1"
+  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
+    whiptail --title "Iris — confirmar" --yesno "$prompt" 16 76 </dev/tty
+  else
+    confirm "$prompt"
+  fi
+}
+
+ui_msgbox() {
+  local text="$1"
+  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
+    whiptail --title "Iris" --msgbox "$text" 14 76 </dev/tty || true
+  else
+    log "$text"
+  fi
+}
+
 select_claude_model() {
   [[ -n $MODEL ]] && return 0
   local choice
@@ -454,6 +494,16 @@ except Exception:
     done < <(fetch_cloud_models || true)
   fi
 
+  # Dejar deepseek-v4.1-flash primero (será la opción preseleccionada).
+  local -a ordered=()
+  for m in "${models[@]}"; do
+    if [[ $m == "deepseek-v4.1-flash" ]]; then ordered+=("$m"); fi
+  done
+  for m in "${models[@]}"; do
+    if [[ $m != "deepseek-v4.1-flash" ]]; then ordered+=("$m"); fi
+  done
+  if (( ${#ordered[@]} > 0 )); then models=("${ordered[@]}"); fi
+
   local -a menu=()
   for m in "${models[@]}"; do
     menu+=("$m" "$m")
@@ -475,7 +525,7 @@ except Exception:
 choose_provider() {
   if [[ -n $PROVIDER ]]; then
     case $PROVIDER in
-      claude-subscription|claude-api|ollama-cloud|ollama-local|custom) return 0 ;;
+      claude-subscription|claude-api|ollama-local|custom) return 0 ;;
       *) die "Proveedor no válido: $PROVIDER" ;;
     esac
   fi
@@ -487,10 +537,9 @@ choose_provider() {
   ensure_whiptail || true
   local choice
   choice="$(ui_menu "Iris — proveedor del modelo" "¿Cómo quieres conectar el modelo?" \
+    "ollama-local" "Ollama — instala y firma (modelos :cloud)" \
     "claude-subscription" "Claude — suscripción Pro/Max/Team" \
     "claude-api" "Claude — clave de API (console.anthropic.com)" \
-    "ollama-cloud" "Ollama Cloud — clave de API, sin instalar Ollama" \
-    "ollama-local" "Ollama Cloud — Ollama local (instala y firma)" \
     "custom" "Otro endpoint compatible con Anthropic")" \
     || die "Selección cancelada."
   PROVIDER="$choice"
@@ -505,51 +554,27 @@ collect_provider_config() {
       ;;
     claude-api)
       if [[ -z $ANTHROPIC_KEY ]]; then
-        read_secret ANTHROPIC_KEY "Clave API de Anthropic (sk-ant-api...)"
+        ui_password ANTHROPIC_KEY "Clave API de Anthropic (sk-ant-api...)" \
+          || die "Instalación cancelada."
       fi
       [[ -n $ANTHROPIC_KEY ]] || die "Necesito la clave de Anthropic."
       select_claude_model
-      ;;
-    ollama-cloud)
-      local tries=0 rc=0
-      while :; do
-        if [[ -z $OLLAMA_KEY ]]; then
-          read_secret OLLAMA_KEY "Clave API de Ollama (ollama.com/settings/keys)"
-        fi
-        [[ -n $OLLAMA_KEY ]] || die "Necesito la clave de Ollama."
-        rc=0
-        validate_ollama_key "$OLLAMA_KEY" "deepseek-v4.1-flash" || rc=$?
-        if [[ $rc -eq 0 ]]; then
-          ok "Clave de Ollama aceptada."
-          break
-        fi
-        if [[ $rc -eq 2 ]]; then
-          warn "Ollama rechazó la clave (401). Verifica que sea la clave correcta de ollama.com/settings/keys."
-          OLLAMA_KEY=""
-          tries=$((tries + 1))
-          [[ $tries -ge 3 ]] && die "No pude validar la clave de Ollama tras 3 intentos."
-          [[ $ASSUME_YES -eq 1 ]] && break
-        else
-          warn "No pude comprobar la clave ahora (red). Continuaré con la instalación."
-          break
-        fi
-      done
-      select_ollama_model ollama-cloud
       ;;
     ollama-local)
       select_ollama_model ollama-local
       ;;
     custom)
       if [[ -z $CUSTOM_BASE ]]; then
-        ask CUSTOM_BASE "URL base compatible con Anthropic" ""
+        ui_input CUSTOM_BASE "URL base compatible con Anthropic" "https://" \
+          || die "Instalación cancelada."
       fi
       [[ $CUSTOM_BASE =~ ^https?:// ]] || die "URL no válida."
       if [[ -z $CUSTOM_TOKEN ]]; then
-        read_secret CUSTOM_TOKEN "Token del endpoint"
+        ui_password CUSTOM_TOKEN "Token del endpoint" || die "Instalación cancelada."
       fi
       [[ -n $CUSTOM_TOKEN ]] || die "Necesito el token del endpoint."
       if [[ -z $MODEL ]]; then
-        ask MODEL "Modelo" ""
+        ui_input MODEL "Modelo" "" || die "Instalación cancelada."
       fi
       [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
       ;;
@@ -583,13 +608,18 @@ if [[ $MODE == update ]]; then
   SKIP_PAIR=1
   log "Modo actualización: se conserva la configuración."
 else
+  ensure_whiptail || true
+
   if [[ -z $PHONE ]]; then
-    ask PHONE "Número de WhatsApp autorizado (con indicativo, ej. +573001112233)"
+    ui_input PHONE "Número de WhatsApp autorizado (con indicativo, ej. +573001112233)" "" \
+      || die "Instalación cancelada."
     PHONE="${PHONE//[[:space:]]/}"
     [[ $PHONE =~ ^\+?[0-9]{8,15}$ ]] || die "Número no válido: $PHONE"
   fi
+
   choose_provider
   collect_provider_config
+
   echo
   log "Resumen de la instalación:"
   dim "  Número:    $PHONE"
@@ -599,7 +629,14 @@ else
   dim "  Código:    $APP_DIR"
   dim "  Datos:     $DATA_DIR"
   echo
-  confirm "¿Continuar?" || { log "Cancelado."; exit 0; }
+
+  ui_yesno "Resumen:
+
+  Número:    $PHONE
+  Proveedor: $(provider_label "$PROVIDER")
+  Modelo:    ${MODEL:-(predeterminado del proveedor)}
+
+¿Continuar con la instalación?" || { log "Cancelado."; exit 0; }
 fi
 
 # ── Dependencias del sistema ────────────────────────────────────────────────
@@ -726,7 +763,8 @@ if [[ $PROVIDER == claude-subscription && -z $OAUTH_TOKEN ]]; then
   rm -f "$TOKEN_OUT"
   if [[ -z $OAUTH_TOKEN ]]; then
     warn "No pude capturar el token automáticamente."
-    read_secret OAUTH_TOKEN "Pega el token (sk-ant-oat01-...)"
+    ui_password OAUTH_TOKEN "Pega el token (sk-ant-oat01-...)" \
+      || die "Instalación cancelada."
   fi
   [[ -n $OAUTH_TOKEN ]] || die "No obtuve el token de la suscripción."
   ok "Token de suscripción guardado."
@@ -858,9 +896,10 @@ if [[ $MODE != update ]]; then
         echo "ANTHROPIC_API_KEY="
         ;;
       ollama-local)
+        # Mismos valores que configura `ollama launch claude`.
         echo "ANTHROPIC_BASE_URL=http://127.0.0.1:11434"
         echo "ANTHROPIC_AUTH_TOKEN=ollama"
-        echo "ANTHROPIC_API_KEY="
+        echo "ANTHROPIC_API_KEY=ollama"
         ;;
       custom)
         echo "ANTHROPIC_BASE_URL=$CUSTOM_BASE"
@@ -954,7 +993,7 @@ if [[ $SIGNIN_OK -eq 1 ]]; then
   TEST_SCRIPT="$(mktemp)"
   {
     echo '#!/usr/bin/env bash'
-    echo ". '$ENV_FILE'"
+    echo "set -a; . '$ENV_FILE'; set +a"
     echo "cd '$IRIS_HOME/workspace'"
     if [[ -n $MODEL ]]; then
       printf "exec '%s' -p 'Responde solo: OK' --output-format json --model '%s' --dangerously-skip-permissions\n" \

@@ -38,29 +38,27 @@ curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/inst
 El instalador pregunta tu número y **cómo conectar el modelo**:
 
 ```
-1) Claude — suscripción Pro/Max/Team (token por navegador)
-2) Claude — clave de API (console.anthropic.com)
-3) Ollama Cloud — clave de API, sin instalar Ollama
-4) Ollama Cloud — Ollama local (instala y firma)
-5) Otro endpoint compatible con Anthropic
+1) Ollama — instala y firma (modelos :cloud)
+2) Claude — suscripción Pro/Max/Team (token por navegador)
+3) Claude — clave de API (console.anthropic.com)
+4) Otro endpoint compatible con Anthropic
 ```
 
 Según la opción:
 
 | Opción | Qué hace |
 |---|---|
-| 1 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
-| 2 | Pide la clave `sk-ant-api...` (sin mostrarla) |
-| 3 | Usa `https://ollama.com` con tu clave; **no instala Ollama**. Valida la clave y te muestra la lista de modelos cloud para elegir con flechas |
-| 4 | Instala Ollama, hace `ollama signin` y usa el daemon local. El modelo se elige de la misma lista |
-| 5 | Pide URL base, token y modelo |
+| 1 | Instala **Ollama**, hace `ollama signin` y muestra la lista de modelos cloud para elegir con flechas |
+| 2 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
+| 3 | Pide la clave `sk-ant-api...` (sin mostrarla) |
+| 4 | Pide URL base, token y modelo |
 
 Los menús se navegan con **flechas** y Enter. Si no hay terminal interactiva, caen a
 una lista numerada.
 
-> **Nombres de modelo:** con la API directa de Ollama se usa el nombre de
-> `/api/tags` **sin** `:cloud` (p. ej. `deepseek-v4.1-flash`). Con Ollama local se
-> añade `:cloud` automáticamente (`deepseek-v4.1-flash:cloud`).
+> **Ollama:** el núcleo ejecuta el equivalente headless de
+> `ollama launch claude --model deepseek-v4.1-flash:cloud`, con el daemon local y
+> el sufijo `:cloud` (que es el que usa Ollama para los modelos en la nube).
 
 Después crea el usuario **`iris`** y las carpetas (`/opt/iris`,
 `/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), empareja
@@ -77,16 +75,15 @@ sudo bash install.sh
 **Sin preguntas** (las claves van por variables de entorno, no por argumentos):
 
 ```bash
-export IRIS_PROVIDER=ollama-cloud
-export IRIS_OLLAMA_KEY=...
+export IRIS_PROVIDER=ollama-local
 export IRIS_PHONE=+573001112233
 export IRIS_MODEL=deepseek-v4.1-flash:cloud
 curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh \
   | sudo -E bash -s -- --yes
 ```
 
-Valores de `IRIS_PROVIDER`: `claude-subscription`, `claude-api`,
-`ollama-cloud`, `ollama-local`, `custom`. Para la suscripción se puede pasar
+Valores de `IRIS_PROVIDER`: `ollama-local`, `claude-subscription`,
+`claude-api`, `custom`. Para la suscripción se puede pasar
 `IRIS_OAUTH_TOKEN`; para Claude API, `IRIS_ANTHROPIC_KEY`; para un endpoint
 propio, `IRIS_CUSTOM_BASE` e `IRIS_CUSTOM_TOKEN`.
 
