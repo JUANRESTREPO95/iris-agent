@@ -82,7 +82,7 @@ def inbox(payload: dict, authorization: str = Header(default="")):
 
     text = str(payload.get("text") or "")
 
-    if commands.is_command(text):
+    if commands.is_iris_command(text):
         reply = commands.handle(cfg, db, worker, chat_id, text)
         if reply:
             bridge.send_text(cfg, chat_id, reply)

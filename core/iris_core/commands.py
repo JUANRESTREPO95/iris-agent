@@ -16,15 +16,38 @@ HELP = """*Iris — comandos*
 /modelo [nombre] — ver o cambiar el modelo
 /estado — cola, proyecto, modelo y sesión
 /detener — detener la tarea en curso
+/comandos — ver los comandos y skills de Claude Code
 /ayuda — esta lista
 
-Todo lo demás se lo envío a Claude Code."""
+Cualquier otro /comando se envía a Claude Code
+(por ejemplo /guardar o los que instales)."""
 
 MODEL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,79}$")
 
+# Solo estos los responde Iris. Cualquier otro /... va a Claude Code.
+IRIS_COMMANDS = {
+    "ayuda", "help", "start",
+    "proyecto", "project",
+    "nuevo", "new", "reset",
+    "modelo", "model",
+    "estado", "status",
+    "detener", "stop", "cancelar",
+    "id", "chatid",
+    "comandos", "commands", "skills", "recargar",
+}
 
+
+def is_iris_command(text: str) -> bool:
+    stripped = str(text or "").lstrip()
+    if not stripped.startswith("/"):
+        return False
+    name = stripped[1:].split(maxsplit=1)[0].lower()
+    return name in IRIS_COMMANDS
+
+
+# Compatibilidad con llamadas antiguas.
 def is_command(text: str) -> bool:
-    return str(text or "").lstrip().startswith("/")
+    return is_iris_command(text)
 
 
 def handle(cfg: Config, db: DB, worker: Worker, chat_id: str, text: str) -> str:
@@ -97,7 +120,78 @@ def handle(cfg: Config, db: DB, worker: Worker, chat_id: str, text: str) -> str:
     if command in {"id", "chatid"}:
         return f"Chat: `{chat_id}`"
 
+    if command in {"comandos", "commands", "skills", "recargar"}:
+        project = chat.get("project") or "general"
+        return _list_custom_commands(cfg, project)
+
     return "Comando no reconocido.\n\n" + HELP
+
+
+def _list_custom_commands(cfg: Config, project: str) -> str:
+    entries = _discover_custom_commands(cfg, project)
+    if not entries:
+        return (
+            "No hay comandos ni skills personalizados instalados en Claude Code.\n\n"
+            "Cuando los instales se descubren solos en el siguiente mensaje; "
+            "no hace falta reiniciar."
+        )
+
+    lines = ["*Comandos y skills de Claude Code*", ""]
+    for name in sorted(entries):
+        desc, scope = entries[name]
+        suffix = f" — {desc}" if desc else ""
+        scope_tag = f" _{scope}_" if scope else ""
+        lines.append(f"• /{name}{suffix}{scope_tag}")
+    lines += ["", "Se descubren en cada mensaje; no hace falta reiniciar."]
+    reply = "\n".join(lines)
+    if len(reply) > 3500:
+        reply = reply[:3400] + "\n… (lista recortada)"
+    return reply
+
+
+def _discover_custom_commands(cfg: Config, project: str) -> dict[str, tuple[str, str]]:
+    home = Path.home()
+    project_dir = Path(cfg.workspace) / project
+    found: dict[str, tuple[str, str]] = {}
+
+    command_bases = [
+        (home / ".claude" / "commands", "usuario"),
+        (project_dir / ".claude" / "commands", "proyecto"),
+    ]
+    for base, scope in command_bases:
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*.md")):
+            rel = path.relative_to(base).with_suffix("")
+            name = rel.as_posix().replace("/", ":")
+            found[name] = (_frontmatter_description(path), scope)
+
+    skill_bases = [
+        (home / ".claude" / "skills", "usuario"),
+        (home / ".agents" / "skills", "usuario"),
+        (project_dir / ".claude" / "skills", "proyecto"),
+    ]
+    for base, scope in skill_bases:
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob("*/SKILL.md")):
+            name = path.parent.name
+            found.setdefault(name, (_frontmatter_description(path), scope))
+
+    return found
+
+
+def _frontmatter_description(path: Path) -> str:
+    try:
+        head = path.read_text(encoding="utf-8-sig", errors="replace")[:4000]
+    except OSError:
+        return ""
+    match = re.search(r"^---\s*$(.*?)^---\s*$", head, re.S | re.M)
+    block = match.group(1) if match else head
+    desc = re.search(r"^description:\s*(.+)$", block, re.M)
+    if not desc:
+        return ""
+    return desc.group(1).strip().strip("\"'")
 
 
 def _list_projects(cfg: Config) -> list[str]:

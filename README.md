@@ -107,10 +107,18 @@ Escríbele normal; todo lo que no sea un comando va a Claude Code.
 | `/modelo [nombre]` | Ver o cambiar el modelo |
 | `/estado` | Cola, proyecto, modelo, sesión |
 | `/detener` | Detener la tarea en curso |
+| `/comandos` | Listar comandos y skills de Claude Code |
 | `/ayuda` | Lista de comandos |
 
 Cada proyecto tiene su propia sesión de Claude Code y su carpeta en
 `/home/iris/workspace`.
+
+**Comandos personalizados:** cualquier `/algo` que no sea de Iris se envía tal
+cual a Claude Code, que expande sus comandos y skills
+(`~/.claude/commands/`, `~/.claude/skills/`, y las variantes del proyecto).
+Se descubren en cada mensaje, así que no hace falta reiniciar. Ojo: son los
+comandos del usuario **`iris`**; los que tengas instalados en tu Claude Code de
+Windows no aparecen automáticamente aquí. `/comandos` te muestra cuáles ve Iris.
 
 ## Gestión desde el servidor
 
