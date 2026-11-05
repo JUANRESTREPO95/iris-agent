@@ -809,6 +809,9 @@ fi
 if [[ -n ${SOURCE_TMP:-} ]]; then
   SOURCE_DIR_TO_SAVE=""
 fi
+case "$SOURCE_DIR_TO_SAVE" in
+  /tmp/*) SOURCE_DIR_TO_SAVE="" ;;
+esac
 [[ -n $TOKEN ]] || TOKEN="$(openssl rand -hex 32)"
 
 pick_free_port() {

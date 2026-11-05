@@ -29,7 +29,15 @@ WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token──► iris-c
 
 ## Instalación
 
-**Desde GitHub (una línea):**
+**Desde GitHub (recomendado, siempre trae la última versión):**
+
+```bash
+rm -rf /tmp/iris-agent-main \
+  && curl -fsSL https://github.com/JUANRESTREPO95/iris-agent/archive/refs/heads/main.tar.gz | tar -xz -C /tmp \
+  && sudo bash /tmp/iris-agent-main/install.sh
+```
+
+Alternativa con `raw` (GitHub la cachea hasta 5 minutos después de un cambio):
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh | sudo bash
