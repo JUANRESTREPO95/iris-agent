@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# Iris Agent — utilidad de gestión.
+#
+#   iris status
+#   iris logs [core|bridge|ollama]
+#   iris pair
+#   iris model [nombre]
+#   iris restart
+#   iris update
+#   iris doctor
+#   iris uninstall [--purge]
+
+set -Eeuo pipefail
+
+ENV_FILE=/etc/iris/iris.env
+APP_DIR=/opt/iris
+IRIS_USER=iris
+
+die() { printf '\033[1;31m[error]\033[0m %s\n' "$*" >&2; exit 1; }
+info() { printf '\033[1;36m[iris]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[aviso]\033[0m %s\n' "$*"; }
+
+as_root() {
+  if [[ $EUID -eq 0 ]]; then "$@"; else sudo "$@"; fi
+}
+
+as_iris() {
+  if [[ $EUID -eq 0 ]]; then
+    runuser -u "$IRIS_USER" -- env HOME="/home/$IRIS_USER" "$@"
+  else
+    sudo -u "$IRIS_USER" -H "$@"
+  fi
+}
+
+load_env() {
+  [[ -f $ENV_FILE ]] || die "No hay instalación ($ENV_FILE)."
+  # shellcheck disable=SC1090
+  set -a; . "$ENV_FILE"; set +a
+}
+
+svc_state() { systemctl is-active "$1" 2>/dev/null || true; }
+
+cmd_status() {
+  load_env
+  echo "Servicios:"
+  for svc in iris-ollama iris-bridge iris-core; do
+    printf '  %-14s %s\n' "$svc" "$(svc_state "$svc")"
+  done
+  local core_json bridge_json
+  echo
+  echo "Salud del núcleo:"
+  core_json="$(curl -fsS -m 3 "http://127.0.0.1:${IRIS_CORE_PORT}/health" 2>/dev/null || true)"
+  if [[ -n $core_json ]]; then
+    printf '%s' "$core_json" | python3 -m json.tool
+  else
+    echo "  (sin respuesta en 127.0.0.1:${IRIS_CORE_PORT})"
+  fi
+  echo
+  echo "WhatsApp:"
+  bridge_json="$(curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" 2>/dev/null || true)"
+  if [[ -n $bridge_json ]]; then
+    printf '%s' "$bridge_json" | python3 -m json.tool
+  else
+    echo "  (sin respuesta en 127.0.0.1:${IRIS_BRIDGE_PORT})"
+  fi
+}
+
+cmd_logs() {
+  local which="${1:-core}"
+  if [[ $which == install ]]; then
+    local log=/var/log/iris/install.log
+    [[ -f $log ]] || die "No hay log de instalación ($log)."
+    as_root tail -n 120 -f "$log"
+    return
+  fi
+  as_root journalctl -u "iris-${which}" -n 120 -f
+}
+
+cmd_pair() {
+  load_env
+  info "Deteniendo el puente para parear…"
+  as_root systemctl stop iris-bridge.service 2>/dev/null || true
+
+  # Una sesión cerrada o inválida impide que aparezca el QR: se aparta la anterior.
+  local session="${IRIS_WA_SESSION:-/var/lib/iris/whatsapp-session}"
+  if [[ -e $session ]]; then
+    local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
+    info "Guardando la sesión anterior en ${session}.bak.${stamp}"
+    as_root mv "$session" "${session}.bak.${stamp}"
+  fi
+  as_iris mkdir -p "$session"
+
+  info "Escanea el QR con WhatsApp (Dispositivos vinculados)."
+  as_iris bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" || true
+  info "Reiniciando el puente…"
+  as_root systemctl start iris-bridge.service
+  sleep 2
+  curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" 2>/dev/null || true
+  echo
+}
+
+cmd_model() {
+  load_env
+  if [[ $# -eq 0 ]]; then
+    echo "Modelo actual: $IRIS_MODEL"
+    return
+  fi
+  local model="$1"
+  [[ -n $model ]] || die "Indica el nombre del modelo."
+  [[ $model =~ ^[A-Za-z0-9._:/+-]+$ ]] || die "Nombre de modelo no válido."
+  info "Verificando $model…"
+  as_iris ollama pull "$model" >/dev/null 2>&1 || warn "No pude descargar '$model'; se intentará al usarlo."
+  info "Cambiando a $model…"
+  as_root sed -i "s|^IRIS_MODEL=.*|IRIS_MODEL=${model}|" "$ENV_FILE"
+  as_root systemctl restart iris-core.service
+  info "Listo. Modelo: $model"
+}
+
+cmd_restart() {
+  info "Reiniciando servicios…"
+  as_root systemctl restart iris-ollama.service iris-bridge.service iris-core.service
+  sleep 2
+  cmd_status
+}
+
+cmd_update() {
+  load_env
+  local src="${IRIS_SOURCE_DIR:-}"
+  if [[ -n $src && -f "$src/install.sh" ]]; then
+    info "Actualizando desde $src…"
+    as_root bash "$src/install.sh" --update
+  elif [[ -n ${IRIS_REPO_URL:-} ]]; then
+    info "Actualizando desde ${IRIS_REPO_URL}…"
+    as_root bash -c "curl -fsSL '${IRIS_REPO_URL%/}/raw/${IRIS_REPO_REF:-main}/install.sh' | bash -s -- --update"
+  else
+    info "Actualizando desde la copia instalada…"
+    as_root bash "$APP_DIR/install.sh" --update
+  fi
+}
+
+cmd_doctor() {
+  load_env
+  echo "Iris doctor"
+  echo "-----------"
+  printf 'Sistema:        %s\n' "$(uname -sr)"
+  printf 'Node:           %s\n' "$(node -v 2>/dev/null || echo 'no encontrado')"
+  printf 'Claude Code:    %s\n' "$(claude --version 2>/dev/null | head -n1 || echo 'no encontrado')"
+  printf 'Ollama:         %s\n' "$(ollama --version 2>/dev/null | head -n1 || echo 'no encontrado')"
+  printf 'Modelo config.: %s\n' "$IRIS_MODEL"
+  printf 'Disco libre:    %s\n' "$(df -h / | awk 'NR==2 {print $4}')"
+  printf 'Memoria libre:  %s\n' "$(free -h | awk '/^Mem:/ {print $7}')"
+  echo
+  if [[ -r /etc/iris/install-state.json ]]; then
+    echo "Instalación:"
+    python3 - /etc/iris/install-state.json <<'PY'
+import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as exc:
+    print(f"  (recibo ilegible: {exc})")
+    raise SystemExit(0)
+detail = d.get("detail", "")
+print(f"  resultado:  {d.get('outcome', '?')}{' — ' + detail if detail else ''}")
+print(f"  fecha:      {d.get('updated_at', '?')}")
+print(f"  modelo:     {d.get('model', '?')}")
+print(f"  origen:     {d.get('source', '?')}")
+ports = d.get("ports") or {}
+print(f"  puertos:    bridge {ports.get('bridge')} / core {ports.get('core')}")
+print(f"  log:        {d.get('log', '?')}")
+PY
+  else
+    echo "Instalación: (sin recibo)"
+  fi
+  echo
+  printf 'Ollama API:     '; curl -fsS -m 3 http://127.0.0.1:11434/api/tags >/dev/null && echo OK || echo FALLA
+  printf 'Núcleo:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_CORE_PORT}/health" >/dev/null && echo OK || echo FALLA
+  printf 'Puente:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" >/dev/null && echo OK || echo FALLA
+  echo
+  for svc in iris-ollama iris-bridge iris-core; do
+    printf '%-14s %s\n' "$svc" "$(svc_state "$svc")"
+  done
+  echo
+  echo "Últimas líneas del núcleo:"
+  as_root journalctl -u iris-core -n 8 --no-pager 2>/dev/null || true
+}
+
+cmd_uninstall() {
+  local installer="$APP_DIR/install.sh"
+  if [[ -f $ENV_FILE ]]; then
+    # shellcheck disable=SC1090
+    local src; src="$(sed -n 's/^IRIS_SOURCE_DIR=//p' "$ENV_FILE" | head -n1)"
+    [[ -n ${src:-} && -f "$src/install.sh" ]] && installer="$src/install.sh"
+  fi
+  as_root bash "$installer" --uninstall "$@"
+}
+
+usage() {
+  cat <<'EOF'
+Uso: iris <comando>
+
+  status                 estado de servicios y salud
+  logs [core|bridge|ollama|install]   seguir logs
+  pair                   volver a parear WhatsApp
+  model [nombre]         ver o cambiar el modelo
+  restart                reiniciar todo
+  update                 actualizar desde el instalador
+  doctor                 diagnóstico rápido
+  uninstall [--purge]    quitar servicios (y purga con --purge)
+EOF
+}
+
+case "${1:-}" in
+  status) shift; cmd_status "$@" ;;
+  logs) shift; cmd_logs "$@" ;;
+  pair) shift; cmd_pair "$@" ;;
+  model) shift; cmd_model "$@" ;;
+  restart) shift; cmd_restart "$@" ;;
+  update) shift; cmd_update "$@" ;;
+  doctor) shift; cmd_doctor "$@" ;;
+  uninstall) shift; cmd_uninstall "$@" ;;
+  help|--help|-h|"") usage ;;
+  *) die "Comando desconocido: $1 (usa: iris help)" ;;
+esac
