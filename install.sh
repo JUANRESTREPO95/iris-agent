@@ -407,44 +407,25 @@ ui_menu() {
   printf '%s' "${tags[$((choice - 1))]}"
 }
 
+# Los paneles de whiptail solo se usan para elegir con flechas (menús).
+# Las cajas de texto de whiptail no se envían con Enter (hay que usar Tab),
+# así que el texto y las claves se piden con prompts normales.
 ui_input() {
-  local __var=$1 __prompt=$2 __default=${3:-} __value=""
-  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
-    __value="$(whiptail --title "Iris — instalación" --inputbox "$__prompt" 10 76 "$__default" \
-      3>&1 1>&2 2>&3 </dev/tty)" || return 1
-  else
-    ask __value "$__prompt" "$__default"
-  fi
-  printf -v "$__var" '%s' "$__value"
+  local __var=$1 __prompt=$2 __default=${3:-}
+  ask __var "$__prompt" "$__default"
 }
 
 ui_password() {
-  local __var=$1 __prompt=$2 __value=""
-  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
-    __value="$(whiptail --title "Iris — credenciales" --passwordbox "$__prompt" 10 76 \
-      3>&1 1>&2 2>&3 </dev/tty)" || return 1
-  else
-    read_secret __value "$__prompt"
-  fi
-  printf -v "$__var" '%s' "$__value"
+  local __var=$1 __prompt=$2
+  read_secret __var "$__prompt"
 }
 
 ui_yesno() {
-  local prompt="$1"
-  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
-    whiptail --title "Iris — confirmar" --yesno "$prompt" 16 76 </dev/tty
-  else
-    confirm "$prompt"
-  fi
+  confirm "$1"
 }
 
 ui_msgbox() {
-  local text="$1"
-  if command -v whiptail >/dev/null 2>&1 && [[ $ASSUME_YES -eq 0 ]]; then
-    whiptail --title "Iris" --msgbox "$text" 14 76 </dev/tty || true
-  else
-    log "$text"
-  fi
+  log "$1"
 }
 
 select_claude_model() {
@@ -608,8 +589,6 @@ if [[ $MODE == update ]]; then
   SKIP_PAIR=1
   log "Modo actualización: se conserva la configuración."
 else
-  ensure_whiptail || true
-
   if [[ -z $PHONE ]]; then
     ui_input PHONE "Número de WhatsApp autorizado (con indicativo, ej. +573001112233)" "" \
       || die "Instalación cancelada."
