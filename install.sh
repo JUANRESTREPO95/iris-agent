@@ -227,6 +227,10 @@ fi
 
 if [[ $EUID -ne 0 ]]; then
   command -v sudo >/dev/null || die "Necesito root y no hay sudo."
+  if [[ -z ${BASH_SOURCE[0]:-} || ! -f ${BASH_SOURCE[0]} ]]; then
+    die "Necesito permisos de root. Ejecuta de nuevo así:
+  curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh | sudo bash"
+  fi
   exec sudo -E bash "$0" "${ORIG_ARGS[@]}"
 fi
 
