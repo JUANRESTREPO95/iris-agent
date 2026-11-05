@@ -42,7 +42,7 @@ c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_dim=$'\033[2m'
 
 log_to_file() {
   [[ -n ${INSTALL_LOG:-} ]] || return 0
-  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$INSTALL_LOG" 2>/dev/null || true
+  { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >>"$INSTALL_LOG"; } 2>/dev/null || true
 }
 
 log()  { printf '%s[iris]%s %s\n' "$c_cyan" "$c_reset" "$*"; log_to_file "[iris] $*"; }
