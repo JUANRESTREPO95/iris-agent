@@ -16,7 +16,7 @@ HELP = """*Iris — comandos*
 /modelo [nombre] — ver o cambiar el modelo
 /estado — cola, proyecto, modelo y sesión
 /detener — detener la tarea en curso
-/comandos — ver los comandos y skills de Claude Code
+/comandos — ver comandos y skills de Claude Code (alias /recargar)
 /ayuda — esta lista
 
 Cualquier otro /comando se envía a Claude Code
@@ -139,6 +139,8 @@ def _list_custom_commands(cfg: Config, project: str) -> str:
     lines = ["*Comandos y skills de Claude Code*", ""]
     for name in sorted(entries):
         desc, scope = entries[name]
+        if len(desc) > 120:
+            desc = desc[:117].rstrip() + "…"
         suffix = f" — {desc}" if desc else ""
         scope_tag = f" _{scope}_" if scope else ""
         lines.append(f"• /{name}{suffix}{scope_tag}")
@@ -188,10 +190,26 @@ def _frontmatter_description(path: Path) -> str:
         return ""
     match = re.search(r"^---\s*$(.*?)^---\s*$", head, re.S | re.M)
     block = match.group(1) if match else head
-    desc = re.search(r"^description:\s*(.+)$", block, re.M)
+    desc = re.search(r"^description:\s*(.*)$", block, re.M)
     if not desc:
         return ""
-    return desc.group(1).strip().strip("\"'")
+    value = desc.group(1).strip()
+    if value in {"", ">", ">-", ">+", "|", "|-", "|+"}:
+        # YAML block scalar: unir las líneas indentadas que siguen.
+        lines = block.splitlines()
+        for i, line in enumerate(lines):
+            if re.match(r"^description:\s*", line):
+                parts: list[str] = []
+                for nxt in lines[i + 1:]:
+                    if nxt.startswith((" ", "\t")):
+                        parts.append(nxt.strip())
+                    elif not nxt.strip():
+                        parts.append("")
+                    else:
+                        break
+                value = " ".join(p for p in parts if p).strip()
+                break
+    return value.strip().strip("\"'")
 
 
 def _list_projects(cfg: Config) -> list[str]:
