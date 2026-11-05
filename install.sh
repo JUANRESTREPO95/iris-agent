@@ -971,11 +971,6 @@ if [[ $PROVIDER == ollama-local ]]; then
     rm -f "$SIGNIN_OUT"
   fi
 
-  if ! run_logged "Verificando modelo $MODEL" \
-      sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" pull "$MODEL"; then
-    warn "No pude descargar/verificar '$MODEL'. Se intentará al primer uso."
-  fi
-
   if [[ $SKIP_SIGNIN -eq 0 && $SIGNIN_OK -eq 0 ]]; then
     warn "Seguimos sin sesión verificada de Ollama. Iris no podrá responder hasta que la completes:"
     dim "  sudo -u iris -H ollama signin"
@@ -984,8 +979,33 @@ else
   log "Modelo: $(provider_label "$PROVIDER")${MODEL:+ ($MODEL)}."
 fi
 
+# ── Pareo de WhatsApp (antes del pull y de las pruebas) ─────────────────────
+
+if [[ $SKIP_PAIR -eq 0 ]]; then
+  echo
+  log "Pareo de WhatsApp"
+  dim "Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular dispositivo."
+  dim "No cierres esta terminal: si el QR caduca, se genera otro automáticamente."
+  if [[ -x /usr/local/bin/iris ]]; then
+    /usr/local/bin/iris pair || warn "El pareo no terminó. Reinténtalo con:  sudo iris pair"
+  else
+    systemctl stop iris-bridge.service 2>/dev/null || true
+    sudo -u "$IRIS_USER" -H bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" </dev/tty \
+      || warn "El pareo no terminó. Reinténtalo con:  sudo iris pair"
+  fi
+fi
+
+# ── Modelo: descarga/verificación ───────────────────────────────────────────
+
+if [[ $PROVIDER == ollama-local ]]; then
+  if ! run_logged "Verificando modelo $MODEL" \
+      sudo -u "$IRIS_USER" -H "$OLLAMA_BIN" pull "$MODEL"; then
+    warn "No pude descargar/verificar '$MODEL'. Se intentará al primer uso."
+  fi
+fi
+
 if [[ $SIGNIN_OK -eq 1 ]]; then
-  log "Prueba rápida de Claude Code${MODEL:+ con $MODEL}…"
+  log "Prueba rápida de Claude Code${MODEL:+ con $MODEL} (puede tardar hasta 2 minutos)…"
   TEST_SCRIPT="$(mktemp)"
   {
     echo '#!/usr/bin/env bash'
@@ -1017,17 +1037,6 @@ if [[ $SIGNIN_OK -eq 1 ]]; then
     dim "Revisa las credenciales del proveedor o el modelo elegido."
   fi
   rm -f "$TEST_SCRIPT"
-fi
-
-# ── Pareo de WhatsApp ───────────────────────────────────────────────────────
-
-if [[ $SKIP_PAIR -eq 0 ]]; then
-  echo
-  log "Pareo de WhatsApp"
-  dim "Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular dispositivo."
-  systemctl stop iris-bridge.service 2>/dev/null || true
-  sudo -u "$IRIS_USER" -H bash -c ". '$ENV_FILE'; exec /usr/bin/env node '$APP_DIR/bridge/server.js' --pair" </dev/tty \
-    || warn "El pareo no terminó. Puedes reintentarlo con:  sudo iris pair"
 fi
 
 # ── Arranque ────────────────────────────────────────────────────────────────
