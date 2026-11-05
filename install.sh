@@ -298,8 +298,9 @@ fi
 trap 'write_state failed "línea $LINENO"; die "Falló la línea $LINENO. Revisa el mensaje anterior."' ERR
 trap cleanup_source_tmp EXIT
 
-# Si una ejecución anterior dejó el terminal en modo raro (whiptail), lo restauramos.
-stty sane </dev/tty 2>/dev/null || true
+# Si una ejecución anterior dejó el terminal en modo raro, lo intentamos restaurar.
+# Con timeout: stty puede quedarse bloqueado si la salida del terminal está detenida.
+timeout 2 stty sane </dev/tty 2>/dev/null || true
 
 # ── Sistema ────────────────────────────────────────────────────────────────
 
