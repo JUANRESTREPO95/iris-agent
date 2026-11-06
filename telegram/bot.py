@@ -21,6 +21,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import signal
 import sys
 import threading
@@ -43,9 +44,24 @@ BRIDGE_TOKEN = (os.environ.get("IRIS_BRIDGE_TOKEN") or "").strip()
 DATA_DIR = Path(os.environ.get("IRIS_DATA") or "/var/lib/iris")
 MEDIA_DIR = DATA_DIR / "telegram-media"
 OFFSET_FILE = DATA_DIR / "telegram-offset.json"
+COMMANDS_FILE = DATA_DIR / "telegram-commands.json"
+SYNC_INTERVAL = int(os.environ.get("IRIS_TELEGRAM_SYNC_INTERVAL") or "600")
 MAX_TEXT = 4000
 SEND_LOCK = threading.Lock()
 BOT_USERNAME = ""
+COMMAND_ALIASES: dict[str, str] = {}
+
+# Comandos propios de Iris, siempre presentes en el menú de Telegram.
+IRIS_COMMANDS = [
+    ("start", "Iniciar y ver la ayuda de Iris"),
+    ("ayuda", "Ayuda de Iris"),
+    ("proyecto", "Ver o cambiar de proyecto"),
+    ("nuevo", "Empezar una sesión nueva"),
+    ("modelo", "Ver o cambiar el modelo"),
+    ("estado", "Estado de Iris"),
+    ("detener", "Detener la tarea en curso"),
+    ("comandos", "Listar comandos y skills"),
+]
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [iris-telegram] %(levelname)s %(message)s",
@@ -109,6 +125,155 @@ def download(file_id: str, suffix: str) -> Path | None:
     except Exception as exc:  # noqa: BLE001
         log.warning("no pude descargar el archivo %s: %s", file_id[:12], exc)
         return None
+
+
+# ── Comandos del menú de Telegram ───────────────────────────────────────────
+
+def sanitize_command(name: str) -> str:
+    """Telegram solo acepta [a-z0-9_], 1-32 chars, y no empieza por número."""
+    value = (
+        str(name or "")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(":", "_")
+        .replace(".", "_")
+    )
+    value = re.sub(r"[^a-z0-9_]", "_", value)
+    value = re.sub(r"_+", "_", value).strip("_")
+    if not value or not value[0].isalpha():
+        value = f"c_{value}" if value else "comando"
+    value = value[:32].rstrip("_")
+    return value or "comando"
+
+
+def _description(path: Path) -> str:
+    try:
+        head = path.read_text(encoding="utf-8-sig", errors="replace")[:4000]
+    except OSError:
+        return ""
+    match = re.search(r"^---\s*$(.*?)^---\s*$", head, re.S | re.M)
+    block = match.group(1) if match else head
+    desc = re.search(r"^description:\s*(.*)$", block, re.M)
+    if not desc:
+        return ""
+    value = desc.group(1).strip()
+    if value in {"", ">", ">-", ">+", "|", "|-", "|+"}:
+        lines = block.splitlines()
+        for i, line in enumerate(lines):
+            if re.match(r"^description:\s*", line):
+                parts: list[str] = []
+                for nxt in lines[i + 1:]:
+                    if nxt.startswith((" ", "\t")):
+                        parts.append(nxt.strip())
+                    elif not nxt.strip():
+                        parts.append("")
+                    else:
+                        break
+                value = " ".join(p for p in parts if p).strip()
+                break
+    return re.sub(r"\s+", " ", value).strip().strip("\"'")
+
+
+def discover_commands() -> tuple[list[dict], dict[str, str]]:
+    entries: list[tuple[str, str, str]] = []
+    for name, desc in IRIS_COMMANDS:
+        entries.append((name, desc, name))
+
+    home = Path.home()
+    command_base = home / ".claude" / "commands"
+    if command_base.is_dir():
+        for path in sorted(command_base.rglob("*.md")):
+            rel = path.relative_to(command_base).with_suffix("")
+            original = rel.as_posix().replace("/", ":")
+            desc = _description(path) or "Comando de Claude Code"
+            entries.append((sanitize_command(original), desc[:200], original))
+
+    for base in (home / ".claude" / "skills", home / ".agents" / "skills"):
+        if not base.is_dir():
+            continue
+        for path in sorted(base.glob("*/SKILL.md")):
+            original = path.parent.name
+            desc = _description(path) or "Skill de Claude Code"
+            entries.append((sanitize_command(original), desc[:200], original))
+
+    used: set[str] = set()
+    commands: list[dict] = []
+    aliases: dict[str, str] = {}
+    for alias, desc, target in entries:
+        if alias in used:
+            base = alias[:29]
+            n = 2
+            while True:
+                suffix = f"_{n}"
+                alias = (base[: 32 - len(suffix)] or "c") + suffix
+                if alias not in used:
+                    break
+                n += 1
+        used.add(alias)
+        commands.append(
+            {"command": alias, "description": (desc or "Comando de Iris")[:256]}
+        )
+        if alias != target:
+            aliases[alias] = target
+        if len(commands) >= 100:
+            break
+
+    return commands, aliases
+
+
+def load_saved_commands() -> None:
+    global COMMAND_ALIASES
+    try:
+        data = json.loads(COMMANDS_FILE.read_text(encoding="utf-8"))
+        aliases = data.get("aliases") or {}
+        if isinstance(aliases, dict):
+            COMMAND_ALIASES = {str(k): str(v) for k, v in aliases.items()}
+    except Exception:  # noqa: BLE001
+        COMMAND_ALIASES = {}
+
+
+def sync_commands() -> None:
+    global COMMAND_ALIASES
+    commands, aliases = discover_commands()
+    if not commands:
+        return
+    api("setMyCommands", {"commands": commands}, timeout=30)
+    COMMAND_ALIASES = aliases
+    payload = {"commands": commands, "aliases": aliases}
+    try:
+        tmp = COMMANDS_FILE.with_suffix(".tmp")
+        tmp.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        tmp.replace(COMMANDS_FILE)
+        COMMANDS_FILE.chmod(0o600)
+    except OSError as exc:
+        log.warning("no pude guardar los comandos: %s", exc)
+    log.info("menú de Telegram sincronizado con %s comandos", len(commands))
+
+
+def rewrite_command(text: str) -> str:
+    """Traduce /alias_de_telegram al comando real (/nombre-con-guiones)."""
+    value = str(text or "")
+    if not value.startswith("/"):
+        return value
+    token, sep, rest = value.partition(" ")
+    name = token[1:].split("@", 1)[0].lower()
+    target = COMMAND_ALIASES.get(name)
+    if target:
+        return "/" + target + (sep + rest if sep else "")
+    return value
+
+
+def sync_loop() -> None:
+    interval = max(60, SYNC_INTERVAL)
+    while True:
+        time.sleep(interval)
+        try:
+            sync_commands()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("no pude resincronizar los comandos: %s", exc)
 
 
 # ── Mensajes ────────────────────────────────────────────────────────────────
@@ -182,6 +347,7 @@ def process_update(update: dict) -> bool:
         return True
 
     text, media = extract_message(msg)
+    text = rewrite_command(text)
     if not text and not media:
         return True
 
@@ -387,6 +553,13 @@ def main() -> None:
     except Exception as exc:  # noqa: BLE001
         log.error("token de Telegram inválido o sin red: %s", exc)
         sys.exit(2)
+
+    load_saved_commands()
+    try:
+        sync_commands()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no pude sincronizar los comandos al arrancar: %s", exc)
+    threading.Thread(target=sync_loop, daemon=True, name="sync").start()
 
     log.info("bot @%s; permitido: %s", BOT_USERNAME, ALLOWED or "(nadie)")
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
