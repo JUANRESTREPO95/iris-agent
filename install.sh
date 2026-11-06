@@ -428,7 +428,9 @@ ui_menu() {
     read -rp "  Elige [1-$n] (Enter = 1): " choice </dev/tty || return 1
     choice="${choice:-1}"
     if [[ $choice =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= n )); then
-      printf '%s' "${keys[$((choice - 1))]}"
+      # Se devuelve en REPLY y no por stdout: así el menú corre en el shell
+      # principal, no en un subshell (que puede detenerse al leer /dev/tty).
+      REPLY="${keys[$((choice - 1))]}"
       return 0
     fi
     printf '  Opción no válida.\n' >&2
@@ -457,13 +459,14 @@ ui_msgbox() {
 select_claude_model() {
   [[ -n $MODEL ]] && return 0
   local choice
-  choice="$(ui_menu "Modelo de Claude" "¿Qué modelo quieres usar?" \
+  ui_menu "Modelo de Claude" "¿Qué modelo quieres usar?" \
     "__default__::Predeterminado de Claude Code::el que traiga Claude" \
     "sonnet::Sonnet::equilibrado" \
     "opus::Opus::máxima capacidad" \
     "haiku::Haiku::rápido" \
-    "__other__::Escribir otro::alias o nombre completo")" \
+    "__other__::Escribir otro::alias o nombre completo" \
     || die "Selección cancelada."
+  choice="$REPLY"
   if [[ $choice == __default__ ]]; then
     MODEL=""
   elif [[ $choice == __other__ ]]; then
@@ -518,8 +521,9 @@ except Exception:
   menu+=("__other__::Escribir otro modelo::")
 
   local choice
-  choice="$(ui_menu "Modelo de Ollama" "Elige el modelo cloud" "${menu[@]}")" \
+  ui_menu "Modelo de Ollama" "Elige el modelo cloud" "${menu[@]}" \
     || die "Selección cancelada."
+  choice="$REPLY"
 
   if [[ $choice == __other__ ]]; then
     ask MODEL "Modelo" "${models[0]:-deepseek-v4.1-flash}"
@@ -553,12 +557,12 @@ choose_channels() {
     return 0
   fi
   local choice
-  choice="$(ui_menu "Canales de Iris" "¿Por dónde quieres usar Iris?" \
+  ui_menu "Canales de Iris" "¿Por dónde quieres usar Iris?" \
     "whatsapp::WhatsApp::conexión por QR" \
     "telegram::Telegram::bot oficial" \
-    "both::WhatsApp + Telegram::los dos a la vez")" \
+    "both::WhatsApp + Telegram::los dos a la vez" \
     || die "Selección cancelada."
-  CHANNELS="$choice"
+  CHANNELS="$REPLY"
   echo
   ok "Canales: $(channel_label "$CHANNELS")"
 }
@@ -630,13 +634,13 @@ choose_provider() {
   fi
 
   local choice
-  choice="$(ui_menu "Proveedor del modelo" "¿Cómo quieres conectar el modelo de Iris?" \
+  ui_menu "Proveedor del modelo" "¿Cómo quieres conectar el modelo de Iris?" \
     "ollama-local::Ollama — instala y firma::modelos :cloud" \
     "claude-subscription::Claude — suscripción::Pro/Max/Team" \
     "claude-api::Claude — clave de API::console.anthropic.com" \
-    "custom::Otro endpoint::compatible con Anthropic")" \
+    "custom::Otro endpoint::compatible con Anthropic" \
     || die "Selección cancelada."
-  PROVIDER="$choice"
+  PROVIDER="$REPLY"
   echo
   ok "Proveedor: $(provider_label "$PROVIDER")"
 }
