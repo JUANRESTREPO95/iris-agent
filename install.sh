@@ -42,7 +42,6 @@ TELEGRAM_BOT=""
 MODEL="${IRIS_MODEL:-}"
 PROVIDER="${IRIS_PROVIDER:-}"
 ANTHROPIC_KEY="${IRIS_ANTHROPIC_KEY:-}"
-OLLAMA_KEY="${IRIS_OLLAMA_KEY:-}"
 OAUTH_TOKEN="${IRIS_OAUTH_TOKEN:-}"
 CUSTOM_BASE="${IRIS_CUSTOM_BASE:-}"
 CUSTOM_TOKEN="${IRIS_CUSTOM_TOKEN:-}"
@@ -199,30 +198,9 @@ fetch_cloud_models() {
 }
 
 normalize_ollama_model() {
-  local provider="$1"
-  if [[ $provider == ollama-cloud ]]; then
-    # La API directa no usa el sufijo :cloud (solo el Ollama local).
-    MODEL="${MODEL%:cloud}"
-  else
-    # Ollama local usa :cloud para enrutar el modelo a la nube.
-    [[ $MODEL == *:cloud ]] || MODEL="${MODEL}:cloud"
-  fi
+  # Ollama local usa :cloud para enrutar el modelo a la nube.
+  [[ $MODEL == *:cloud ]] || MODEL="${MODEL}:cloud"
   [[ -n $MODEL ]] || die "El modelo no puede quedar vacío."
-}
-
-validate_ollama_key() {
-  local key="$1" model="${2:-deepseek-v4.1-flash}" code
-  code="$(curl -s -o /tmp/iris-key-test.json -w '%{http_code}' --max-time 60 \
-    https://ollama.com/api/chat \
-    -H "Authorization: Bearer $key" \
-    -H 'content-type: application/json' \
-    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"di OK\"}],\"stream\":false}" \
-    2>/dev/null || echo 000)"
-  case "$code" in
-    401) return 2 ;;
-    000) return 1 ;;
-    *) return 0 ;;
-  esac
 }
 
 confirm() {
@@ -381,7 +359,6 @@ provider_label() {
   case "$1" in
     claude-subscription) echo "Claude (suscripción Pro/Max/Team)" ;;
     claude-api) echo "Claude (clave de API)" ;;
-    ollama-cloud) echo "Ollama Cloud (API directa, sin Ollama local)" ;;
     ollama-local) echo "Ollama Cloud (Ollama local)" ;;
     custom) echo "Otro endpoint compatible con Anthropic" ;;
     *) echo "$1" ;;
@@ -477,32 +454,15 @@ select_claude_model() {
 }
 
 select_ollama_model() {
-  local provider="$1"
-  [[ -n $MODEL ]] && { normalize_ollama_model "$provider"; return 0; }
+  [[ -n $MODEL ]] && { normalize_ollama_model; return 0; }
 
   local -a models=()
   local m
 
-  # Con clave válida, /api/tags da los nombres exactos de la API.
-  if [[ $provider == ollama-cloud && -n ${OLLAMA_KEY:-} ]]; then
-    while IFS= read -r m; do
-      [[ -n $m ]] && models+=("$m")
-    done < <(curl -fsSL --max-time 20 https://ollama.com/api/tags \
-      -H "Authorization: Bearer $OLLAMA_KEY" 2>/dev/null \
-      | python3 -c 'import json,sys
-try:
-    for x in json.load(sys.stdin).get("models", []):
-        if x.get("name"): print(x["name"])
-except Exception:
-    pass' 2>/dev/null || true)
-  fi
-
-  # Si no hubo lista (o es Ollama local), usar el catálogo cloud de la web.
-  if (( ${#models[@]} == 0 )); then
-    while IFS= read -r m; do
-      [[ -n $m ]] && models+=("$m")
-    done < <(fetch_cloud_models || true)
-  fi
+  # Catálogo cloud de la web (los nombres se usan con el sufijo :cloud).
+  while IFS= read -r m; do
+    [[ -n $m ]] && models+=("$m")
+  done < <(fetch_cloud_models || true)
 
   # Dejar deepseek-v4.1-flash primero (será la opción preseleccionada).
   local -a ordered=()
@@ -530,7 +490,7 @@ except Exception:
   else
     MODEL="$choice"
   fi
-  normalize_ollama_model "$provider"
+  normalize_ollama_model
 }
 
 has_whatsapp() { [[ $CHANNELS == whatsapp || $CHANNELS == both ]]; }
@@ -661,7 +621,7 @@ collect_provider_config() {
       select_claude_model
       ;;
     ollama-local)
-      select_ollama_model ollama-local
+      select_ollama_model
       ;;
     custom)
       if [[ -z $CUSTOM_BASE ]]; then
@@ -686,7 +646,6 @@ infer_provider_from_env() {
   if [[ -n ${IRIS_PROVIDER:-} ]]; then printf '%s' "$IRIS_PROVIDER"; return; fi
   if [[ -n ${CLAUDE_CODE_OAUTH_TOKEN:-} ]]; then printf 'claude-subscription'; return; fi
   case "${ANTHROPIC_BASE_URL:-}" in
-    https://ollama.com*) printf 'ollama-cloud'; return ;;
     http://127.0.0.1:11434*|http://localhost:11434*) printf 'ollama-local'; return ;;
     "") : ;;
     *) printf 'custom'; return ;;
@@ -1031,11 +990,6 @@ if [[ $MODE != update ]]; then
         ;;
       claude-api)
         echo "ANTHROPIC_API_KEY=$ANTHROPIC_KEY"
-        ;;
-      ollama-cloud)
-        echo "ANTHROPIC_BASE_URL=https://ollama.com"
-        echo "ANTHROPIC_AUTH_TOKEN=$OLLAMA_KEY"
-        echo "ANTHROPIC_API_KEY="
         ;;
       ollama-local)
         # Mismos valores que configura `ollama launch claude`.
