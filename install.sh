@@ -614,6 +614,8 @@ infer_channels_from_env() {
   if [[ -n ${IRIS_TELEGRAM_TOKEN:-} ]]; then tg=1; fi
   if (( wa && tg )); then
     printf 'both'
+  elif (( wa )); then
+    printf 'whatsapp'
   elif (( tg )); then
     printf 'telegram'
   else
