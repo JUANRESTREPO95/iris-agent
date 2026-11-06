@@ -1,33 +1,39 @@
 # Iris Agent
 
 Claude Code corriendo 24/7 en un servidor Linux, controlable por Telegram
-(o WhatsApp).
+(por defecto) o por WhatsApp.
 
 Escribes por Telegram → Iris ejecuta Claude Code en un directorio de trabajo →
 te responde por el mismo chat, con formato (negrita, tablas y bloques de
 código).
 
 ```
-WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token──► iris-core (Python)
-                                                              │
-                                                              ▼
-                                                    claude -p (headless)
-                                                              │
-                                                              ▼
-                                                   ~/workspace/<proyecto>
+Telegram ──► iris-telegram (Python, Bot API) ──HTTP+token──┐
+                                                           ├──► iris-core (Python)
+WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token─────┘         │
+                                                                     ▼
+                                                           claude -p (headless)
+                                                                     │
+                                                                     ▼
+                                                          ~/workspace/<proyecto>
 ```
 
 ## Requisitos
 
 - Linux con **systemd** (Ubuntu/Debian). WSL sirve para pruebas.
 - Acceso `sudo`.
-- Un número de WhatsApp dedicado (recomendado) para el bot.
 - Una forma de acceso al modelo:
   - suscripción de Claude (Pro/Max/Team),
   - clave de API de Anthropic,
-  - clave de API de Ollama Cloud (sin instalar Ollama),
   - Ollama local con cuenta de Ollama Cloud,
-  - otro endpoint compatible con la API de Anthropic.
+  - otro endpoint compatible con la API de Anthropic (por ejemplo, la API de
+    Ollama Cloud con `https://ollama.com` y su clave).
+
+Según el canal:
+
+- **Telegram** (por defecto): un bot creado en [@BotFather](https://t.me/BotFather)
+  y tu ID numérico de usuario. No hace falta número de teléfono.
+- **WhatsApp**: un número dedicado (recomendado) para el bot.
 
 ## Instalación
 
@@ -53,11 +59,11 @@ El instalador pregunta primero **por dónde quieres usar Iris**:
 3) WhatsApp + Telegram
 ```
 
-- **WhatsApp**: pide el número autorizado y hace el pareo con QR.
 - **Telegram**: pide el token del bot y tu ID numérico. Crea el bot con
   [@BotFather](https://t.me/BotFather) (`/newbot`) y obtén tu ID con
   [@userinfobot](https://t.me/userinfobot). Después abre el bot y pulsa
   `/start` para que pueda escribirte.
+- **WhatsApp**: pide el número autorizado y hace el pareo con QR.
 - **Ambos**: configura los dos; el mismo Iris atiende por los dos lados.
 
 Luego pregunta **cómo conectar el modelo**:
@@ -76,20 +82,20 @@ Según la opción:
 | 1 | Instala **Ollama**, hace `ollama signin` y muestra la lista de modelos cloud para elegir con un número |
 | 2 | Ejecuta `claude setup-token` (abre el navegador) y guarda el token de un año |
 | 3 | Pide la clave `sk-ant-api...` (sin mostrarla) |
-| 4 | Pide URL base, token y modelo |
+| 4 | Pide URL base, token y modelo (sirve para la API de Ollama Cloud: `https://ollama.com`) |
 
 Los menús son de terminal, con colores y opciones numeradas: escribes el número y
 Enter (Enter solo = opción 1). No cambian el modo del terminal ni necesitan
 dependencias extra.
 
-> **Ollama:** el núcleo ejecuta el equivalente headless de
+> **Ollama local:** el núcleo ejecuta el equivalente headless de
 > `ollama launch claude --model deepseek-v4.1-flash:cloud`, con el daemon local y
 > el sufijo `:cloud` (que es el que usa Ollama para los modelos en la nube).
 
 Después crea el usuario **`iris`** y las carpetas (`/opt/iris`,
 `/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), configura los
-puentes elegidos (`iris-bridge` para WhatsApp, `iris-telegram` para Telegram),
-deja activo `iris-core` (y `iris-ollama` solo con la opción 4) y envía los
+puentes elegidos (`iris-telegram` para Telegram, `iris-bridge` para WhatsApp),
+deja activo `iris-core` (e `iris-ollama` solo con la opción 1) y envía los
 mensajes de prueba.
 
 Telegram no necesita QR ni sesión: usa la API oficial del bot con long polling
@@ -105,21 +111,52 @@ sudo bash install.sh
 **Sin preguntas** (las claves van por variables de entorno, no por argumentos):
 
 ```bash
-export IRIS_PROVIDER=ollama-local
+export IRIS_CHANNELS=whatsapp
 export IRIS_PHONE=+573001112233
+export IRIS_PROVIDER=ollama-local
 export IRIS_MODEL=deepseek-v4.1-flash:cloud
 curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh \
   | sudo -E bash -s -- --yes
 ```
 
-Valores de `IRIS_PROVIDER`: `ollama-local`, `claude-subscription`,
-`claude-api`, `custom`. Para la suscripción se puede pasar
-`IRIS_OAUTH_TOKEN`; para Claude API, `IRIS_ANTHROPIC_KEY`; para un endpoint
-propio, `IRIS_CUSTOM_BASE` e `IRIS_CUSTOM_TOKEN`.
+O por Telegram:
 
-## Uso por WhatsApp
+```bash
+export IRIS_CHANNELS=telegram
+export IRIS_TELEGRAM_TOKEN=123456:ABC...
+export IRIS_TELEGRAM_USER=123456789
+export IRIS_PROVIDER=ollama-local
+export IRIS_MODEL=deepseek-v4.1-flash:cloud
+curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh \
+  | sudo -E bash -s -- --yes
+```
 
-Escríbele normal; todo lo que no sea un comando va a Claude Code.
+> Si usas `--yes` sin `IRIS_CHANNELS`, el instalador elige **Telegram**.
+
+Opciones del instalador:
+
+| Opción | Qué hace |
+|---|---|
+| `--channels NAME` | `whatsapp`, `telegram` o `both` |
+| `--phone NUM` | número autorizado de WhatsApp (E.164) |
+| `--model NAME` | modelo (Ollama o alias de Claude; vacío = predeterminado) |
+| `--provider NAME` | `ollama-local`, `claude-subscription`, `claude-api` o `custom` |
+| `--yes` | no preguntar; usa las variables de entorno |
+| `--skip-signin` | no iniciar sesión en Ollama |
+| `--skip-pair` | no emparejar WhatsApp en este momento |
+| `--update` | actualizar código y reiniciar (conserva la configuración) |
+| `--uninstall [--purge]` | quitar servicios (y borrar datos y usuario con `--purge`) |
+| `--help` | ayuda |
+
+Variables para modo no interactivo: `IRIS_CHANNELS`, `IRIS_PROVIDER`,
+`IRIS_PHONE`, `IRIS_MODEL`, `IRIS_TELEGRAM_TOKEN`, `IRIS_TELEGRAM_USER`,
+`IRIS_OAUTH_TOKEN` (suscripción), `IRIS_ANTHROPIC_KEY` (API de Claude),
+`IRIS_CUSTOM_BASE` / `IRIS_CUSTOM_TOKEN` (endpoint propio).
+
+## Uso
+
+Escríbele normal por Telegram o WhatsApp; todo lo que no sea un comando va a
+Claude Code.
 
 | Comando | Qué hace |
 |---|---|
@@ -128,11 +165,23 @@ Escríbele normal; todo lo que no sea un comando va a Claude Code.
 | `/modelo [nombre]` | Ver o cambiar el modelo |
 | `/estado` | Cola, proyecto, modelo, sesión |
 | `/detener` | Detener la tarea en curso |
+| `/id` | Ver el ID del chat (útil para configurar el canal) |
 | `/comandos` | Listar comandos y skills de Claude Code |
 | `/ayuda` | Lista de comandos |
 
+También acepta alias en inglés: `/help`, `/start`, `/project`, `/new`,
+`/reset`, `/model`, `/status`, `/stop`, `/cancelar`, `/commands`, `/skills` y
+`/recargar`.
+
 Cada proyecto tiene su propia sesión de Claude Code y su carpeta en
 `/home/iris/workspace`.
+
+En Telegram el menú de comandos del bot se sincroniza solo con los comandos de
+Iris y con los comandos y skills instalados de Claude Code (los alias que
+Telegram no admite, como los guiones, se traducen automáticamente).
+
+**Adjuntos:** acepta fotos, documentos, audios y videos. El puente los descarga
+en `/var/lib/iris` y Claude Code los recibe como rutas de archivo.
 
 **Comandos personalizados:** cualquier `/algo` que no sea de Iris se envía tal
 cual a Claude Code, que expande sus comandos y skills
@@ -147,6 +196,7 @@ Windows no aparecen automáticamente aquí. `/comandos` te muestra cuáles ve Ir
 sudo iris status
 sudo iris logs core          # también: bridge, telegram, ollama, install
 sudo iris pair
+sudo iris telegram [token] [id]   # añadir o actualizar el bot de Telegram
 sudo iris model deepseek-v4.1-flash:cloud
 sudo iris restart
 sudo iris update
@@ -171,12 +221,15 @@ sudo iris doctor
 
 ## Cómo funciona
 
+- **`iris-telegram`**: habla con la Bot API de Telegram por long polling. Solo
+  acepta mensajes del ID configurado y reenvía al núcleo por HTTP local con un
+  token.
 - **`iris-bridge`**: mantiene la sesión de WhatsApp Web con Baileys. Solo
   acepta mensajes del número configurado. Cuando llega un mensaje, lo reenvía
   al núcleo por HTTP local con un token. Si el núcleo está caído, reintenta.
 - **`iris-core`**: guarda el mensaje en SQLite, lo procesa un worker y lanza
   `claude -p --output-format json` dentro de la carpeta del proyecto. La
-  respuesta se trocea y se envía de vuelta por el puente.
+  respuesta se trocea y se envía de vuelta por el puente correspondiente.
 - **Sesiones**: una por proyecto (`--session-id` / `--resume`), así Claude
   recuerda el contexto entre mensajes.
 - **Cola persistente**: si el proceso muere, los mensajes pendientes siguen en
@@ -187,10 +240,12 @@ sudo iris doctor
 - El usuario `iris` **no tiene sudo** y solo Claude corre como él.
 - Claude trabaja en `/home/iris/workspace`; tus carpetas personales no están
   montadas ni son accesibles con permisos de escritura.
-- El canal bridge ↔ core exige un token aleatorio de 32 bytes.
-- Ambos servicios escuchan **solo en 127.0.0.1**.
-- El número autorizado está en `IRIS_PHONE`; cualquier otro remitente se
-  descarta.
+- El canal puente ↔ núcleo exige un token aleatorio de 32 bytes.
+- Los servicios (núcleo y puentes) escuchan **solo en 127.0.0.1**.
+- Solo se acepta al remitente autorizado: `IRIS_PHONE` en WhatsApp e
+  `IRIS_TELEGRAM_USER` en Telegram. Con `*` como ID de Telegram, el bot acepta
+  a cualquiera (útil solo para pruebas).
+- Los tokens se piden sin mostrarlos en pantalla.
 
 **Importante:** por defecto Iris arranca Claude con
 `--dangerously-skip-permissions` (`IRIS_PERMISSION_MODE=bypassPermissions`)
@@ -211,6 +266,9 @@ y reinicia: `sudo iris restart`.
 |---|---|
 | El QR no aparece | `sudo iris logs bridge`; el pareo se hace con `sudo iris pair` |
 | WhatsApp se desconecta | normal tras reinicios; el puente reconecta solo |
+| Telegram no responde | `sudo iris logs telegram`; comprueba `IRIS_TELEGRAM_USER` y pulsa `/start` en el bot |
+| Telegram rechazó el token | vuelve a configurarlo con `sudo iris telegram` |
+| El bot no escribe primero | Telegram no deja iniciar la conversación al bot: pulsa `/start` |
 | "Ollama no arrancó" | `journalctl -u iris-ollama -n 50` |
 | Claude no responde | `sudo iris logs core` |
 | Modelo equivocado | `sudo iris model <nombre>` |
@@ -227,8 +285,8 @@ sudo iris uninstall --purge  # borra datos y usuario iris
 
 - Baileys es un cliente **no oficial** de WhatsApp Web. Meta puede cambiar el
   protocolo o limitar la cuenta; para un producto conviene la API oficial
-  (WhatsApp Cloud API).
-- El archivo `/etc/iris/iris.env` contiene el token del canal y la
+  (WhatsApp Cloud API). Telegram usa la API oficial de bots.
+- El archivo `/etc/iris/iris.env` contiene los tokens de los canales y la
   configuración: no lo subas a ningún repo.
 - La sesión de WhatsApp (`/var/lib/iris/whatsapp-session`) equivale a la cuenta.
   Respáldala cifrada y nunca la compartas.
