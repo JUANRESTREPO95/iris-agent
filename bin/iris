@@ -42,11 +42,17 @@ svc_state() { systemctl is-active "$1" 2>/dev/null || true; }
 
 cmd_status() {
   load_env
-  local units=(iris-bridge iris-core)
+  local units=(iris-core)
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    units=(iris-bridge "${units[@]}")
+  fi
+  if [[ -f /etc/systemd/system/iris-telegram.service ]]; then
+    units=(iris-telegram "${units[@]}")
+  fi
   if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
     units=(iris-ollama "${units[@]}")
   fi
-  echo "Proveedor: ${IRIS_PROVIDER:-?}${IRIS_MODEL:+ · modelo $IRIS_MODEL}"
+  echo "Canales: ${IRIS_CHANNELS:-whatsapp} · proveedor ${IRIS_PROVIDER:-?}${IRIS_MODEL:+ · modelo $IRIS_MODEL}"
   echo "Servicios:"
   for svc in "${units[@]}"; do
     printf '  %-14s %s\n' "$svc" "$(svc_state "$svc")"
@@ -60,13 +66,25 @@ cmd_status() {
   else
     echo "  (sin respuesta en 127.0.0.1:${IRIS_CORE_PORT})"
   fi
-  echo
-  echo "WhatsApp:"
-  bridge_json="$(curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" 2>/dev/null || true)"
-  if [[ -n $bridge_json ]]; then
-    printf '%s' "$bridge_json" | python3 -m json.tool
-  else
-    echo "  (sin respuesta en 127.0.0.1:${IRIS_BRIDGE_PORT})"
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    echo
+    echo "WhatsApp:"
+    bridge_json="$(curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" 2>/dev/null || true)"
+    if [[ -n $bridge_json ]]; then
+      printf '%s' "$bridge_json" | python3 -m json.tool
+    else
+      echo "  (sin respuesta en 127.0.0.1:${IRIS_BRIDGE_PORT})"
+    fi
+  fi
+  if [[ -f /etc/systemd/system/iris-telegram.service ]]; then
+    echo
+    echo "Telegram:"
+    tg_json="$(curl -fsS -m 3 "${IRIS_TELEGRAM_BRIDGE_URL:-http://127.0.0.1:3005}/health" 2>/dev/null || true)"
+    if [[ -n $tg_json ]]; then
+      printf '%s' "$tg_json" | python3 -m json.tool
+    else
+      echo "  (sin respuesta en ${IRIS_TELEGRAM_BRIDGE_URL:-http://127.0.0.1:3005})"
+    fi
   fi
 }
 
@@ -83,6 +101,9 @@ cmd_logs() {
 
 cmd_pair() {
   load_env
+  if [[ ! -f /etc/systemd/system/iris-bridge.service ]]; then
+    die "WhatsApp no está configurado en esta instalación."
+  fi
   info "Deteniendo el puente para parear…"
   as_root systemctl stop iris-bridge.service 2>/dev/null || true
 
@@ -104,6 +125,80 @@ cmd_pair() {
   echo
 }
 
+cmd_telegram() {
+  load_env
+  [[ $EUID -eq 0 ]] || die "Ejecuta con sudo:  sudo iris telegram"
+  local token="${1:-}" user="${2:-}" bot=""
+  if [[ -z $token ]]; then
+    read -rsp "Token del bot de Telegram (@BotFather): " token </dev/tty
+    echo
+  fi
+  [[ -n $token ]] || die "Token vacío."
+  bot="$(curl -fsS --max-time 15 "https://api.telegram.org/bot${token}/getMe" 2>/dev/null \
+    | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
+  [[ -n $bot ]] || die "Telegram rechazó el token."
+  if [[ -z $user ]]; then
+    read -rp "Tu ID numérico de Telegram (usa @userinfobot): " user </dev/tty
+  fi
+  [[ $user == "*" || $user =~ ^-?[0-9]+$ ]] || die "ID de Telegram no válido."
+
+  local port="${IRIS_TELEGRAM_BRIDGE_PORT:-}"
+  if [[ -z $port ]]; then
+    port=3005
+    while ss -ltnH "sport = :$port" 2>/dev/null | grep -q .; do
+      port=$((port + 1))
+    done
+  fi
+
+  local channels="telegram"
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    channels="both"
+  fi
+
+  if [[ ! -f /opt/iris/telegram/bot.py ]]; then
+    info "Actualizando Iris para incluir el puente de Telegram…"
+    as_root bash "$APP_DIR/install.sh" --update
+  fi
+
+  TOKEN="$token" USER_ID="$user" TG_PORT="$port" CHANNELS="$channels" python3 - <<'PY'
+import os
+from pathlib import Path
+
+path = Path("/etc/iris/iris.env")
+lines = [
+    line for line in path.read_text(encoding="utf-8").splitlines()
+    if not line.startswith(("IRIS_TELEGRAM_", "IRIS_CHANNELS="))
+]
+lines += [
+    f"IRIS_CHANNELS={os.environ['CHANNELS']}",
+    f"IRIS_TELEGRAM_TOKEN={os.environ['TOKEN']}",
+    f"IRIS_TELEGRAM_USER={os.environ['USER_ID']}",
+    f"IRIS_TELEGRAM_BRIDGE_PORT={os.environ['TG_PORT']}",
+    f"IRIS_TELEGRAM_BRIDGE_URL=http://127.0.0.1:{os.environ['TG_PORT']}",
+]
+path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+path.chmod(0o640)
+PY
+  chown root:"$IRIS_USER" /etc/iris/iris.env
+
+  install -m 0644 /opt/iris/systemd/iris-telegram.service /etc/systemd/system/iris-telegram.service
+  systemctl daemon-reload
+  systemctl enable iris-telegram.service >/dev/null
+  systemctl restart iris-telegram.service iris-core.service
+  sleep 2
+
+  ok "Telegram configurado: @$bot · canales: $channels"
+  dim "Abre @$bot en Telegram y pulsa /start."
+  if [[ $user != "*" ]] && curl -fsS -X POST "http://127.0.0.1:${port}/send" \
+      -H "Authorization: Bearer $IRIS_BRIDGE_TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d "{\"chatId\":\"$user\",\"text\":\"Iris en línea ✅\"}" >/dev/null 2>&1; then
+    ok "Mensaje de prueba enviado por Telegram"
+  else
+    warn "Aún no puedo escribirte por Telegram: abre @$bot y pulsa /start."
+  fi
+}
+
 cmd_model() {
   load_env
   if [[ $# -eq 0 ]]; then
@@ -123,7 +218,13 @@ cmd_model() {
 
 cmd_restart() {
   info "Reiniciando servicios…"
-  local units=(iris-bridge.service iris-core.service)
+  local units=(iris-core.service)
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    units=(iris-bridge.service "${units[@]}")
+  fi
+  if [[ -f /etc/systemd/system/iris-telegram.service ]]; then
+    units=(iris-telegram.service "${units[@]}")
+  fi
   if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
     units=(iris-ollama.service "${units[@]}")
   fi
@@ -155,6 +256,7 @@ cmd_doctor() {
   printf 'Node:           %s\n' "$(node -v 2>/dev/null || echo 'no encontrado')"
   printf 'Claude Code:    %s\n' "$(claude --version 2>/dev/null | head -n1 || echo 'no encontrado')"
   printf 'Ollama:         %s\n' "$(ollama --version 2>/dev/null | head -n1 || echo 'no instalado')"
+  printf 'Canales:        %s\n' "${IRIS_CHANNELS:-whatsapp}"
   printf 'Proveedor:      %s\n' "${IRIS_PROVIDER:-?}"
   printf 'Modelo config.: %s\n' "${IRIS_MODEL:-(predeterminado del proveedor)}"
   printf 'Disco libre:    %s\n' "$(df -h / | awk 'NR==2 {print $4}')"
@@ -186,9 +288,20 @@ PY
     printf 'Ollama API:     '; curl -fsS -m 3 http://127.0.0.1:11434/api/tags >/dev/null && echo OK || echo FALLA
   fi
   printf 'Núcleo:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_CORE_PORT}/health" >/dev/null && echo OK || echo FALLA
-  printf 'Puente:         '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" >/dev/null && echo OK || echo FALLA
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    printf 'WhatsApp:       '; curl -fsS -m 3 "http://127.0.0.1:${IRIS_BRIDGE_PORT}/health" >/dev/null && echo OK || echo FALLA
+  fi
+  if [[ -f /etc/systemd/system/iris-telegram.service ]]; then
+    printf 'Telegram:       '; curl -fsS -m 3 "${IRIS_TELEGRAM_BRIDGE_URL:-http://127.0.0.1:3005}/health" >/dev/null && echo OK || echo FALLA
+  fi
   echo
-  local units=(iris-bridge iris-core)
+  local units=(iris-core)
+  if [[ -f /etc/systemd/system/iris-bridge.service ]]; then
+    units=(iris-bridge "${units[@]}")
+  fi
+  if [[ -f /etc/systemd/system/iris-telegram.service ]]; then
+    units=(iris-telegram "${units[@]}")
+  fi
   if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
     units=(iris-ollama "${units[@]}")
   fi
@@ -217,6 +330,7 @@ Uso: iris <comando>
   status                 estado de servicios y salud
   logs [core|bridge|ollama|install]   seguir logs
   pair                   volver a parear WhatsApp
+  telegram [token] [id]  añadir o actualizar el bot de Telegram
   model [nombre]         ver o cambiar el modelo
   restart                reiniciar todo
   update                 actualizar desde el instalador
@@ -229,6 +343,7 @@ case "${1:-}" in
   status) shift; cmd_status "$@" ;;
   logs) shift; cmd_logs "$@" ;;
   pair) shift; cmd_pair "$@" ;;
+  telegram) shift; cmd_telegram "$@" ;;
   model) shift; cmd_model "$@" ;;
   restart) shift; cmd_restart "$@" ;;
   update) shift; cmd_update "$@" ;;

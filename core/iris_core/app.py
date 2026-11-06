@@ -57,7 +57,12 @@ def _digits(value: str) -> str:
     return re.sub(r"\D+", "", head)
 
 
-def _sender_allowed(sender: str) -> bool:
+def _sender_allowed(channel: str, sender: str) -> bool:
+    if channel == "telegram":
+        allowed = (cfg.telegram_user or "").strip()
+        if allowed == "*":
+            return True
+        return bool(allowed) and str(sender or "").strip() == allowed
     phone = re.sub(r"\D+", "", cfg.phone or "")
     if (cfg.phone or "").strip() == "*":
         return True
@@ -71,15 +76,25 @@ def inbox(payload: dict, authorization: str = Header(default="")):
     """Recibe un mensaje del puente. Responde rápido; el trabajo pesado va a la cola."""
     _auth(authorization)
 
+    channel = str(payload.get("channel") or "whatsapp").strip().lower()
+    if channel not in {"whatsapp", "telegram"}:
+        raise HTTPException(status_code=400, detail="canal no válido")
+
     chat_id = str(payload.get("chatId") or "").strip()
     if not chat_id:
         raise HTTPException(status_code=400, detail="chatId es obligatorio")
+    if channel == "telegram" and not chat_id.startswith("tg:"):
+        if not chat_id.lstrip("-").isdigit():
+            raise HTTPException(status_code=400, detail="chatId de Telegram no válido")
+        chat_id = f"tg:{chat_id}"
 
-    if not _sender_allowed(payload.get("senderId")):
-        db.audit("rejected_sender", str(payload.get("senderId")), chat_id)
-        log.warning("remitente no autorizado: %s", payload.get("senderId"))
+    if not _sender_allowed(channel, payload.get("senderId")):
+        db.audit("rejected_sender", f"{channel}:{payload.get('senderId')}", chat_id)
+        log.warning("remitente no autorizado (%s): %s", channel, payload.get("senderId"))
         return {"ok": False, "error": "remitente no autorizado"}
 
+    payload["chatId"] = chat_id
+    payload["channel"] = channel
     text = str(payload.get("text") or "")
 
     if commands.is_iris_command(text):
@@ -102,6 +117,10 @@ def health():
         "queue": status["queue"],
         "running": status["running"],
         "bridge": (bridge.health(cfg) or {}).get("status", "desconocido"),
+        "telegram_bridge": (bridge.telegram_health(cfg) or {}).get(
+            "status", "desconocido"
+        ),
+        "channels": cfg.channels,
         "provider": cfg.provider,
         "model": cfg.model,
         "version": "0.1.0",
@@ -114,6 +133,8 @@ def status(authorization: str = Header(default="")):
     return {
         "worker": worker.status(),
         "bridge": bridge.health(cfg),
+        "telegram_bridge": bridge.telegram_health(cfg),
+        "channels": cfg.channels,
         "model": cfg.model,
         "workspace": str(cfg.workspace),
     }

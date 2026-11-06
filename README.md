@@ -43,7 +43,22 @@ Alternativa con `raw` (GitHub la cachea hasta 5 minutos después de un cambio):
 curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/install.sh | sudo bash
 ```
 
-El instalador pregunta tu número y **cómo conectar el modelo**:
+El instalador pregunta primero **por dónde quieres usar Iris**:
+
+```
+1) WhatsApp
+2) Telegram
+3) WhatsApp + Telegram
+```
+
+- **WhatsApp**: pide el número autorizado y hace el pareo con QR.
+- **Telegram**: pide el token del bot y tu ID numérico. Crea el bot con
+  [@BotFather](https://t.me/BotFather) (`/newbot`) y obtén tu ID con
+  [@userinfobot](https://t.me/userinfobot). Después abre el bot y pulsa
+  `/start` para que pueda escribirte.
+- **Ambos**: configura los dos; el mismo Iris atiende por los dos lados.
+
+Luego pregunta **cómo conectar el modelo**:
 
 ```
 1) Ollama — instala y firma (modelos :cloud)
@@ -70,9 +85,13 @@ dependencias extra.
 > el sufijo `:cloud` (que es el que usa Ollama para los modelos en la nube).
 
 Después crea el usuario **`iris`** y las carpetas (`/opt/iris`,
-`/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), empareja
-WhatsApp con QR, deja activos `iris-bridge` e `iris-core` (y `iris-ollama`
-solo con la opción 4) y envía un mensaje de prueba.
+`/etc/iris/iris.env`, `/var/lib/iris`, `/home/iris/workspace`), configura los
+puentes elegidos (`iris-bridge` para WhatsApp, `iris-telegram` para Telegram),
+deja activo `iris-core` (y `iris-ollama` solo con la opción 4) y envía los
+mensajes de prueba.
+
+Telegram no necesita QR ni sesión: usa la API oficial del bot con long polling
+y solo acepta el ID autorizado.
 
 **Desde una copia local:**
 
@@ -124,7 +143,7 @@ Windows no aparecen automáticamente aquí. `/comandos` te muestra cuáles ve Ir
 
 ```bash
 sudo iris status
-sudo iris logs core          # también: bridge, ollama, install
+sudo iris logs core          # también: bridge, telegram, ollama, install
 sudo iris pair
 sudo iris model deepseek-v4.1-flash:cloud
 sudo iris restart

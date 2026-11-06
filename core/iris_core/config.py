@@ -23,6 +23,9 @@ def _env(name: str, default: str = "") -> str:
 @dataclass(frozen=True)
 class Config:
     phone: str
+    channels: str
+    telegram_user: str
+    telegram_bridge_url: str
     provider: str
     model: str
     workspace: Path
@@ -41,6 +44,11 @@ class Config:
 def load() -> Config:
     return Config(
         phone=_env("IRIS_PHONE"),
+        channels=_env("IRIS_CHANNELS", "whatsapp"),
+        telegram_user=_env("IRIS_TELEGRAM_USER"),
+        telegram_bridge_url=_env(
+            "IRIS_TELEGRAM_BRIDGE_URL", "http://127.0.0.1:3005"
+        ).rstrip("/"),
         provider=_env("IRIS_PROVIDER", "ollama-local"),
         model=_env("IRIS_MODEL"),
         workspace=Path(_env("IRIS_WORKSPACE", "/home/iris/workspace")).expanduser(),

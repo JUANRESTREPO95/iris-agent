@@ -13,8 +13,18 @@ from .config import Config
 log = logging.getLogger("iris.bridge")
 
 
-def _post(cfg: Config, path: str, payload: dict, timeout: float = 15.0) -> dict | None:
-    url = f"{cfg.bridge_url}{path}"
+def _route(cfg: Config, chat_id: str) -> tuple[str, str]:
+    """Devuelve (url del puente, chat_id nativo del canal)."""
+    target = str(chat_id)
+    if target.startswith("tg:"):
+        return cfg.telegram_bridge_url, target[3:]
+    return cfg.bridge_url, target
+
+
+def _post_url(
+    cfg: Config, base: str, path: str, payload: dict, timeout: float = 15.0
+) -> dict | None:
+    url = f"{base}{path}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -36,6 +46,10 @@ def _post(cfg: Config, path: str, payload: dict, timeout: float = 15.0) -> dict 
     except Exception as exc:  # noqa: BLE001
         log.warning("bridge no disponible (%s): %s", path, exc)
         return None
+
+
+def _post(cfg: Config, path: str, payload: dict, timeout: float = 15.0) -> dict | None:
+    return _post_url(cfg, cfg.bridge_url, path, payload, timeout)
 
 
 def chunk_text(text: str, limit: int) -> list[str]:
@@ -61,9 +75,12 @@ def send_text(cfg: Config, chat_id: str, text: str) -> bool:
     parts = chunk_text(text, cfg.max_chars)
     if not parts:
         return True
+    base, target = _route(cfg, chat_id)
     ok_all = True
     for i, part in enumerate(parts):
-        result = _post(cfg, "/send", {"chatId": chat_id, "text": part}, timeout=30)
+        result = _post_url(
+            cfg, base, "/send", {"chatId": target, "text": part}, timeout=30
+        )
         if result is None:
             ok_all = False
             break
@@ -73,13 +90,21 @@ def send_text(cfg: Config, chat_id: str, text: str) -> bool:
 
 
 def send_typing(cfg: Config, chat_id: str) -> None:
-    _post(cfg, "/typing", {"chatId": chat_id}, timeout=5)
+    base, target = _route(cfg, chat_id)
+    _post_url(cfg, base, "/typing", {"chatId": target}, timeout=5)
 
 
-def health(cfg: Config) -> dict | None:
-    url = f"{cfg.bridge_url}/health"
+def _health_url(url: str) -> dict | None:
     try:
         with urllib.request.urlopen(url, timeout=3) as resp:
             return json.loads(resp.read().decode("utf-8", "replace"))
     except Exception:  # noqa: BLE001
         return None
+
+
+def health(cfg: Config) -> dict | None:
+    return _health_url(f"{cfg.bridge_url}/health")
+
+
+def telegram_health(cfg: Config) -> dict | None:
+    return _health_url(f"{cfg.telegram_bridge_url}/health")

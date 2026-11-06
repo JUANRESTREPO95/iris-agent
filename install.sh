@@ -34,7 +34,11 @@ ASSUME_YES=0
 SKIP_SIGNIN=0
 SKIP_PAIR=0
 PURGE=0
+CHANNELS="${IRIS_CHANNELS:-}"
 PHONE="${IRIS_PHONE:-}"
+TELEGRAM_TOKEN="${IRIS_TELEGRAM_TOKEN:-}"
+TELEGRAM_USER="${IRIS_TELEGRAM_USER:-}"
+TELEGRAM_BOT=""
 MODEL="${IRIS_MODEL:-}"
 PROVIDER="${IRIS_PROVIDER:-}"
 ANTHROPIC_KEY="${IRIS_ANTHROPIC_KEY:-}"
@@ -106,6 +110,7 @@ write_state() {
     printf '  "outcome": "%s",\n' "$(json_escape "$outcome")"
     printf '  "detail": "%s",\n' "$(json_escape "$detail")"
     printf '  "mode": "%s",\n' "$(json_escape "${MODE:-install}")"
+    printf '  "channels": "%s",\n' "$(json_escape "${CHANNELS:-}")"
     printf '  "provider": "%s",\n' "$(json_escape "${PROVIDER:-}")"
     printf '  "model": "%s",\n' "$(json_escape "${MODEL:-}")"
     printf '  "phone_set": %s,\n' "$([[ -n ${PHONE:-} ]] && echo true || echo false)"
@@ -123,7 +128,7 @@ write_state() {
 
 # Si el instalador llegó solo (curl | bash), descarga el resto del proyecto.
 ensure_sources() {
-  if [[ -f $SRC_DIR/bridge/server.js && -d $SRC_DIR/core/iris_core ]]; then
+  if [[ -f $SRC_DIR/bridge/server.js && -d $SRC_DIR/core/iris_core && -d $SRC_DIR/telegram ]]; then
     return 0
   fi
 
@@ -141,7 +146,7 @@ ensure_sources() {
     || die "No pude extraer el código fuente (ver $INSTALL_LOG)."
   rm -f "$SOURCE_TMP/src.tar.gz"
 
-  [[ -f $SOURCE_TMP/bridge/server.js && -d $SOURCE_TMP/core/iris_core ]] \
+  [[ -f $SOURCE_TMP/bridge/server.js && -d $SOURCE_TMP/core/iris_core && -d $SOURCE_TMP/telegram ]] \
     || die "El paquete descargado no tiene el formato esperado."
   SRC_DIR="$SOURCE_TMP"
 }
@@ -155,6 +160,7 @@ backup_existing() {
   local paths=() rel_app="${APP_DIR#/}" rel_env="${ENV_FILE#/}"
   if [[ -d $APP_DIR/bridge ]]; then paths+=("$rel_app/bridge"); fi
   if [[ -d $APP_DIR/core ]]; then paths+=("$rel_app/core"); fi
+  if [[ -d $APP_DIR/telegram ]]; then paths+=("$rel_app/telegram"); fi
   if [[ -d $APP_DIR/systemd ]]; then paths+=("$rel_app/systemd"); fi
   if [[ -d $APP_DIR/bin ]]; then paths+=("$rel_app/bin"); fi
   if [[ -f $APP_DIR/install.sh ]]; then paths+=("$rel_app/install.sh"); fi
@@ -245,6 +251,7 @@ usage() {
   cat <<'EOF'
 Uso: sudo ./install.sh [opciones]
 
+  --channels NAME    whatsapp | telegram | both
   --phone NUM        número de WhatsApp autorizado (E.164)
   --model NAME       modelo (Ollama o alias de Claude; vacío = predeterminado)
   --provider NAME    ollama-local | claude-subscription | claude-api | custom
@@ -257,7 +264,8 @@ Uso: sudo ./install.sh [opciones]
   --help             esta ayuda
 
 Variables para modo no interactivo:
-  IRIS_PROVIDER, IRIS_PHONE, IRIS_MODEL,
+  IRIS_CHANNELS, IRIS_PROVIDER, IRIS_PHONE, IRIS_MODEL,
+  IRIS_TELEGRAM_TOKEN, IRIS_TELEGRAM_USER,
   IRIS_OAUTH_TOKEN (suscripción), IRIS_ANTHROPIC_KEY (API de Claude),
   IRIS_CUSTOM_BASE / IRIS_CUSTOM_TOKEN
 EOF
@@ -265,6 +273,7 @@ EOF
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --channels) CHANNELS="${2:-}"; shift 2 ;;
     --phone) PHONE="${2:-}"; shift 2 ;;
     --model) MODEL="${2:-}"; shift 2 ;;
     --provider) PROVIDER="${2:-}"; shift 2 ;;
@@ -337,9 +346,10 @@ fi
 
 if [[ $MODE == uninstall ]]; then
   log "Deteniendo servicios…"
-  systemctl disable --now iris-core.service iris-bridge.service iris-ollama.service 2>/dev/null || true
+  systemctl disable --now iris-core.service iris-bridge.service iris-telegram.service iris-ollama.service 2>/dev/null || true
   rm -f /etc/systemd/system/iris-core.service \
         /etc/systemd/system/iris-bridge.service \
+        /etc/systemd/system/iris-telegram.service \
         /etc/systemd/system/iris-ollama.service
   systemctl daemon-reload
   rm -f /usr/local/bin/iris "$STATE_FILE"
@@ -519,6 +529,94 @@ except Exception:
   normalize_ollama_model "$provider"
 }
 
+has_whatsapp() { [[ $CHANNELS == whatsapp || $CHANNELS == both ]]; }
+has_telegram() { [[ $CHANNELS == telegram || $CHANNELS == both ]]; }
+
+channel_label() {
+  case "$1" in
+    whatsapp) echo "WhatsApp" ;;
+    telegram) echo "Telegram" ;;
+    both) echo "WhatsApp + Telegram" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+choose_channels() {
+  if [[ -n $CHANNELS ]]; then
+    case $CHANNELS in
+      whatsapp|telegram|both) return 0 ;;
+      *) die "Canal no válido: $CHANNELS (usa whatsapp, telegram o both)" ;;
+    esac
+  fi
+  if [[ $ASSUME_YES -eq 1 ]]; then
+    CHANNELS=whatsapp
+    return 0
+  fi
+  local choice
+  choice="$(ui_menu "Canales de Iris" "¿Por dónde quieres usar Iris?" \
+    "whatsapp::WhatsApp::conexión por QR" \
+    "telegram::Telegram::bot oficial" \
+    "both::WhatsApp + Telegram::los dos a la vez")" \
+    || die "Selección cancelada."
+  CHANNELS="$choice"
+  echo
+  ok "Canales: $(channel_label "$CHANNELS")"
+}
+
+telegram_username() {
+  local token="$1" out
+  out="$(curl -fsS --max-time 15 "https://api.telegram.org/bot${token}/getMe" 2>/dev/null || true)"
+  [[ -n $out ]] || return 1
+  printf '%s' "$out" \
+    | sed -n 's/.*"username"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+    | head -n1
+}
+
+collect_telegram() {
+  local tries=0
+  while :; do
+    if [[ -z $TELEGRAM_TOKEN ]]; then
+      dim "  Crea el bot en Telegram: @BotFather → /newbot → copia el token."
+      ui_password TELEGRAM_TOKEN "Token del bot de Telegram" \
+        || die "Instalación cancelada."
+    fi
+    [[ -n $TELEGRAM_TOKEN ]] || die "Necesito el token del bot de Telegram."
+    TELEGRAM_BOT="$(telegram_username "$TELEGRAM_TOKEN" || true)"
+    if [[ -n $TELEGRAM_BOT ]]; then
+      ok "Bot de Telegram: @$TELEGRAM_BOT"
+      break
+    fi
+    warn "Telegram rechazó el token."
+    TELEGRAM_TOKEN=""
+    tries=$((tries + 1))
+    [[ $tries -ge 3 ]] && die "No pude validar el token de Telegram."
+    [[ $ASSUME_YES -eq 1 ]] && die "Token de Telegram no válido."
+  done
+
+  if [[ -z $TELEGRAM_USER ]]; then
+    dim "  Tu ID numérico: escríbele a @userinfobot en Telegram y copia el número."
+    ui_input TELEGRAM_USER "ID numérico de Telegram autorizado" "" \
+      || die "Instalación cancelada."
+  fi
+  [[ $TELEGRAM_USER == "*" || $TELEGRAM_USER =~ ^-?[0-9]+$ ]] \
+    || die "ID de Telegram no válido: $TELEGRAM_USER"
+  dim "  Abre @$TELEGRAM_BOT y pulsa /start para que pueda escribirte."
+}
+
+infer_channels_from_env() {
+  if [[ -n ${IRIS_CHANNELS:-} ]]; then printf '%s' "$IRIS_CHANNELS"; return; fi
+  local wa=0 tg=0
+  if [[ -n ${IRIS_PHONE:-} ]]; then wa=1; fi
+  if [[ -n ${IRIS_TELEGRAM_TOKEN:-} ]]; then tg=1; fi
+  if (( wa && tg )); then
+    printf 'both'
+  elif (( tg )); then
+    printf 'telegram'
+  else
+    printf 'whatsapp'
+  fi
+}
+
 choose_provider() {
   if [[ -n $PROVIDER ]]; then
     case $PROVIDER in
@@ -597,6 +695,11 @@ if [[ $MODE == update ]]; then
   . "$ENV_FILE"
   PHONE="${IRIS_PHONE:-$PHONE}"
   MODEL="${IRIS_MODEL:-$MODEL}"
+  TELEGRAM_TOKEN="${IRIS_TELEGRAM_TOKEN:-$TELEGRAM_TOKEN}"
+  TELEGRAM_USER="${IRIS_TELEGRAM_USER:-$TELEGRAM_USER}"
+  if [[ -z $CHANNELS ]]; then
+    CHANNELS="$(infer_channels_from_env)"
+  fi
   if [[ -z $PROVIDER ]]; then
     PROVIDER="$(infer_provider_from_env)"
   fi
@@ -604,11 +707,19 @@ if [[ $MODE == update ]]; then
   SKIP_PAIR=1
   log "Modo actualización: se conserva la configuración."
 else
-  if [[ -z $PHONE ]]; then
-    ui_input PHONE "Número de WhatsApp autorizado (con indicativo, ej. +573001112233)" "" \
-      || die "Instalación cancelada."
-    PHONE="${PHONE//[[:space:]]/}"
-    [[ $PHONE =~ ^\+?[0-9]{8,15}$ ]] || die "Número no válido: $PHONE"
+  choose_channels
+
+  if has_whatsapp; then
+    if [[ -z $PHONE ]]; then
+      ui_input PHONE "Número de WhatsApp autorizado (con indicativo, ej. +573001112233)" "" \
+        || die "Instalación cancelada."
+      PHONE="${PHONE//[[:space:]]/}"
+      [[ $PHONE =~ ^\+?[0-9]{8,15}$ ]] || die "Número no válido: $PHONE"
+    fi
+  fi
+
+  if has_telegram; then
+    collect_telegram
   fi
 
   choose_provider
@@ -616,7 +727,9 @@ else
 
   echo
   log "Resumen de la instalación:"
-  dim "  Número:    $PHONE"
+  dim "  Canales:   $(channel_label "$CHANNELS")"
+  if has_whatsapp; then dim "  WhatsApp:  $PHONE"; fi
+  if has_telegram; then dim "  Telegram:  @$TELEGRAM_BOT · ID $TELEGRAM_USER"; fi
   dim "  Proveedor: $(provider_label "$PROVIDER")"
   dim "  Modelo:    ${MODEL:-(predeterminado del proveedor)}"
   dim "  Usuario:   $IRIS_USER"
@@ -624,11 +737,15 @@ else
   dim "  Datos:     $DATA_DIR"
   echo
 
+  SUMMARY="Canales:   $(channel_label "$CHANNELS")"
+  if has_whatsapp; then SUMMARY+=$'\n'"WhatsApp:  $PHONE"; fi
+  if has_telegram; then SUMMARY+=$'\n'"Telegram:  @$TELEGRAM_BOT · ID $TELEGRAM_USER"; fi
+  SUMMARY+=$'\n'"Proveedor: $(provider_label "$PROVIDER")"
+  SUMMARY+=$'\n'"Modelo:    ${MODEL:-(predeterminado del proveedor)}"
+
   ui_yesno "Resumen:
 
-  Número:    $PHONE
-  Proveedor: $(provider_label "$PROVIDER")
-  Modelo:    ${MODEL:-(predeterminado del proveedor)}
+$SUMMARY
 
 ¿Continuar con la instalación?" || { log "Cancelado."; exit 0; }
 fi
@@ -775,9 +892,10 @@ log "Copiando Iris…"
 [[ -d "$SRC_DIR/core/iris_core" ]] || die "No encuentro core/iris_core junto al instalador."
 
 if [[ "$(readlink -f "$SRC_DIR")" != "$(readlink -f "$APP_DIR")" ]]; then
-  rm -rf "$APP_DIR/bridge" "$APP_DIR/core" "$APP_DIR/systemd" "$APP_DIR/bin"
+  rm -rf "$APP_DIR/bridge" "$APP_DIR/core" "$APP_DIR/telegram" "$APP_DIR/systemd" "$APP_DIR/bin"
   cp -a "$SRC_DIR/bridge" "$APP_DIR/bridge"
   cp -a "$SRC_DIR/core" "$APP_DIR/core"
+  cp -a "$SRC_DIR/telegram" "$APP_DIR/telegram"
   cp -a "$SRC_DIR/systemd" "$APP_DIR/systemd"
   [[ -d "$SRC_DIR/bin" ]] && cp -a "$SRC_DIR/bin" "$APP_DIR/bin"
   install -m 0755 "$SRC_DIR/install.sh" "$APP_DIR/install.sh"
@@ -788,7 +906,7 @@ fi
 if [[ -f "$APP_DIR/bin/iris" ]]; then
   install -m 0755 "$APP_DIR/bin/iris" /usr/local/bin/iris
 fi
-chown -R root:root "$APP_DIR/bridge" "$APP_DIR/core" "$APP_DIR/systemd"
+chown -R root:root "$APP_DIR/bridge" "$APP_DIR/core" "$APP_DIR/telegram" "$APP_DIR/systemd"
 chmod -R a+rX "$APP_DIR"
 
 run_logged "Instalando dependencias de Node" \
@@ -839,6 +957,7 @@ pick_free_port() {
 
 EXISTING_BRIDGE_PORT="$(sed -n 's/^IRIS_BRIDGE_PORT=//p' "$ENV_FILE" 2>/dev/null | head -n1 || true)"
 EXISTING_CORE_PORT="$(sed -n 's/^IRIS_CORE_PORT=//p' "$ENV_FILE" 2>/dev/null | head -n1 || true)"
+EXISTING_TELEGRAM_PORT="$(sed -n 's/^IRIS_TELEGRAM_BRIDGE_PORT=//p' "$ENV_FILE" 2>/dev/null | head -n1 || true)"
 if [[ $MODE == update && -n ${EXISTING_BRIDGE_PORT:-} ]]; then
   BRIDGE_PORT_VALUE="$EXISTING_BRIDGE_PORT"
 else
@@ -857,11 +976,31 @@ if [[ "$CORE_PORT_VALUE" != "3004" ]]; then
   warn "El puerto 3004 está ocupado; usaré $CORE_PORT_VALUE para el núcleo."
 fi
 
+TELEGRAM_PORT_VALUE=""
+if has_telegram; then
+  if [[ $MODE == update && -n ${EXISTING_TELEGRAM_PORT:-} ]]; then
+    TELEGRAM_PORT_VALUE="$EXISTING_TELEGRAM_PORT"
+  else
+    TELEGRAM_PORT_VALUE="$(pick_free_port $((CORE_PORT_VALUE + 1)))"
+  fi
+  [[ -n ${TELEGRAM_PORT_VALUE:-} ]] || die "No pude asignar un puerto para Telegram."
+  if [[ "$TELEGRAM_PORT_VALUE" != "3005" ]]; then
+    warn "El puerto 3005 está ocupado; usaré $TELEGRAM_PORT_VALUE para Telegram."
+  fi
+fi
+
 if [[ $MODE != update ]]; then
   umask 077
   {
     echo "# Iris Agent — configuración (generada por install.sh)"
+    echo "IRIS_CHANNELS=$CHANNELS"
     echo "IRIS_PHONE=$PHONE"
+    if has_telegram; then
+      echo "IRIS_TELEGRAM_TOKEN=$TELEGRAM_TOKEN"
+      echo "IRIS_TELEGRAM_USER=$TELEGRAM_USER"
+      echo "IRIS_TELEGRAM_BRIDGE_PORT=$TELEGRAM_PORT_VALUE"
+      echo "IRIS_TELEGRAM_BRIDGE_URL=http://127.0.0.1:$TELEGRAM_PORT_VALUE"
+    fi
     echo "IRIS_PROVIDER=$PROVIDER"
     echo "IRIS_MODEL=$MODEL"
     echo "IRIS_WORKSPACE=$IRIS_HOME/workspace"
@@ -916,9 +1055,25 @@ fi
 # ── Servicios ──────────────────────────────────────────────────────────────
 
 log "Instalando servicios systemd…"
-install -m 0644 "$SRC_DIR/systemd/iris-bridge.service" /etc/systemd/system/iris-bridge.service
 install -m 0644 "$SRC_DIR/systemd/iris-core.service" /etc/systemd/system/iris-core.service
-ENABLE_UNITS=(iris-bridge.service iris-core.service)
+ENABLE_UNITS=(iris-core.service)
+
+if has_whatsapp; then
+  install -m 0644 "$SRC_DIR/systemd/iris-bridge.service" /etc/systemd/system/iris-bridge.service
+  ENABLE_UNITS+=(iris-bridge.service)
+else
+  systemctl disable --now iris-bridge.service 2>/dev/null || true
+  rm -f /etc/systemd/system/iris-bridge.service
+fi
+
+if has_telegram && [[ -n ${TELEGRAM_TOKEN:-} ]]; then
+  install -m 0644 "$SRC_DIR/systemd/iris-telegram.service" /etc/systemd/system/iris-telegram.service
+  ENABLE_UNITS+=(iris-telegram.service)
+else
+  systemctl disable --now iris-telegram.service 2>/dev/null || true
+  rm -f /etc/systemd/system/iris-telegram.service
+fi
+
 if [[ $PROVIDER == ollama-local ]]; then
   install -m 0644 "$SRC_DIR/systemd/iris-ollama.service" /etc/systemd/system/iris-ollama.service
   ENABLE_UNITS+=(iris-ollama.service)
@@ -982,7 +1137,7 @@ fi
 
 # ── Pareo de WhatsApp (antes del pull y de las pruebas) ─────────────────────
 
-if [[ $SKIP_PAIR -eq 0 ]]; then
+if [[ $SKIP_PAIR -eq 0 ]] && has_whatsapp; then
   echo
   log "Pareo de WhatsApp"
   dim "Abre WhatsApp en tu teléfono → Dispositivos vinculados → Vincular dispositivo."
@@ -1044,7 +1199,14 @@ fi
 # ── Arranque ────────────────────────────────────────────────────────────────
 
 log "Arrancando Iris…"
-systemctl restart iris-bridge.service iris-core.service
+START_UNITS=(iris-core.service)
+if has_whatsapp; then
+  START_UNITS=(iris-bridge.service "${START_UNITS[@]}")
+fi
+if has_telegram && [[ -n ${TELEGRAM_TOKEN:-} ]]; then
+  START_UNITS=(iris-telegram.service "${START_UNITS[@]}")
+fi
+systemctl restart "${START_UNITS[@]}"
 
 CORE_OK=0
 for _ in $(seq 1 30); do
@@ -1054,20 +1216,39 @@ done
 [[ $CORE_OK -eq 1 ]] || die "El núcleo no respondió. Revisa: journalctl -u iris-core -n 50"
 ok "Núcleo en línea."
 
-for _ in $(seq 1 30); do
-  STATUS="$(curl -fsS "http://127.0.0.1:${BRIDGE_PORT_VALUE}/health" 2>/dev/null | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' || true)"
-  [[ "$STATUS" == "connected" ]] && break
-  sleep 1
-done
-if [[ "${STATUS:-}" == "connected" ]]; then
-  ok "WhatsApp conectado."
-else
-  warn "WhatsApp aún no conectado (estado: ${STATUS:-desconocido}). Ejecuta:  sudo iris pair"
+STATUS=""
+if has_whatsapp; then
+  for _ in $(seq 1 30); do
+    STATUS="$(curl -fsS "http://127.0.0.1:${BRIDGE_PORT_VALUE}/health" 2>/dev/null | sed -n 's/.*"status":"\([^"]*\)".*/\1/p' || true)"
+    [[ "$STATUS" == "connected" ]] && break
+    sleep 1
+  done
+  if [[ "${STATUS:-}" == "connected" ]]; then
+    ok "WhatsApp conectado."
+  else
+    warn "WhatsApp aún no conectado (estado: ${STATUS:-desconocido}). Ejecuta:  sudo iris pair"
+  fi
+fi
+
+TELEGRAM_OK=0
+if has_telegram; then
+  for _ in $(seq 1 20); do
+    if curl -fsS "http://127.0.0.1:${TELEGRAM_PORT_VALUE}/health" >/dev/null 2>&1; then
+      TELEGRAM_OK=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $TELEGRAM_OK -eq 1 ]]; then
+    ok "Telegram en línea (@$TELEGRAM_BOT)."
+  else
+    warn "Telegram no respondió. Revisa: journalctl -u iris-telegram -n 50"
+  fi
 fi
 
 # ── Prueba ──────────────────────────────────────────────────────────────────
 
-if [[ "${STATUS:-}" == "connected" ]]; then
+if has_whatsapp && [[ "${STATUS:-}" == "connected" ]]; then
   PHONE_DIGITS="$(printf '%s' "$PHONE" | tr -cd '0-9')"
   if curl -fsS -X POST "http://127.0.0.1:${BRIDGE_PORT_VALUE}/send" \
       -H "Authorization: Bearer $TOKEN" \
@@ -1075,25 +1256,44 @@ if [[ "${STATUS:-}" == "connected" ]]; then
       -d "{\"chatId\":\"${PHONE_DIGITS}@s.whatsapp.net\",\"text\":\"Iris en línea ✅\"}" >/dev/null; then
     ok "Mensaje de prueba enviado a $PHONE"
   else
-    warn "No pude enviar el mensaje de prueba."
+    warn "No pude enviar el mensaje de prueba por WhatsApp."
+  fi
+fi
+
+if has_telegram && [[ $TELEGRAM_OK -eq 1 && $TELEGRAM_USER != "*" ]]; then
+  if curl -fsS -X POST "http://127.0.0.1:${TELEGRAM_PORT_VALUE}/send" \
+      -H "Authorization: Bearer $TOKEN" \
+      -H 'Content-Type: application/json' \
+      -d "{\"chatId\":\"$TELEGRAM_USER\",\"text\":\"Iris en línea ✅\"}" >/dev/null; then
+    ok "Mensaje de prueba enviado por Telegram"
+  else
+    warn "No pude enviar por Telegram. Abre @$TELEGRAM_BOT y pulsa /start."
   fi
 fi
 
 # ── Resumen ─────────────────────────────────────────────────────────────────
 
-write_state success "signin_ok=$SIGNIN_OK skip_signin=$SKIP_SIGNIN skip_pair=$SKIP_PAIR"
+write_state success "signin_ok=$SIGNIN_OK skip_signin=$SKIP_SIGNIN skip_pair=$SKIP_PAIR channels=$CHANNELS"
+
+SERVICES="iris-core"
+if has_whatsapp; then SERVICES="iris-bridge  $SERVICES"; fi
+if has_telegram; then SERVICES="iris-telegram  $SERVICES"; fi
+if [[ -f /etc/systemd/system/iris-ollama.service ]]; then SERVICES="iris-ollama  $SERVICES"; fi
 
 echo
 ok "Iris quedó instalado."
-if [[ -f /etc/systemd/system/iris-ollama.service ]]; then
-  dim "  Servicios:  iris-ollama  iris-bridge  iris-core"
-else
-  dim "  Servicios:  iris-bridge  iris-core"
-fi
+dim "  Servicios:  $SERVICES"
+dim "  Canales:    $(channel_label "$CHANNELS")"
 dim "  Config:     $ENV_FILE"
 dim "  Datos:      $DATA_DIR"
 dim "  Workspace:  $IRIS_HOME/workspace"
 dim "  Logs:       journalctl -u iris-core -f"
 echo
-dim "Prueba: escribe por WhatsApp a $PHONE"
+if has_whatsapp && has_telegram; then
+  dim "Prueba: escribe por WhatsApp a $PHONE o a @$TELEGRAM_BOT en Telegram"
+elif has_telegram; then
+  dim "Prueba: escribe a @$TELEGRAM_BOT en Telegram"
+else
+  dim "Prueba: escribe por WhatsApp a $PHONE"
+fi
 dim "Gestión:  sudo iris status | logs | pair | model <nombre> | restart"
