@@ -47,6 +47,7 @@ OFFSET_FILE = DATA_DIR / "telegram-offset.json"
 COMMANDS_FILE = DATA_DIR / "telegram-commands.json"
 SYNC_INTERVAL = int(os.environ.get("IRIS_TELEGRAM_SYNC_INTERVAL") or "600")
 MAX_TEXT = 4000
+TELEGRAM_LIMIT = 4096
 SEND_LOCK = threading.Lock()
 BOT_USERNAME = ""
 COMMAND_ALIASES: dict[str, str] = {}
@@ -430,25 +431,214 @@ def poll_loop() -> None:
                 save_offset(offset)
 
 
+# ── Formato: Markdown → HTML de Telegram ────────────────────────────────────
+
+TABLE_SEP = re.compile(r"^\s*\|?\s*:?-{2,}:?\s*(?:\|\s*:?-{2,}:?\s*)+\|?\s*$")
+HORIZONTAL_RULE = re.compile(r"^\s*([-*_])\s*(?:\1\s*){2,}$")
+FENCE_START = re.compile(r"^\s*(```|~~~)\s*([\w.+#-]*)\s*$")
+FENCE_ANY = re.compile(r"^\s*(```|~~~)")
+
+
+def escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def plain_cell(cell: str) -> str:
+    cell = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", cell)
+    for mark in ("**", "__", "~~", "`"):
+        cell = cell.replace(mark, "")
+    return cell.replace("|", "/").strip()
+
+
+def render_table(rows: list[str]) -> str:
+    header = [plain_cell(c) for c in split_row(rows[0])]
+    body = [[plain_cell(c) for c in split_row(r)] for r in rows[2:] if r.strip()]
+    columns = max(1, len(header))
+    widths: list[int] = []
+    for col in range(columns):
+        cells = [header[col]] + [r[col] if col < len(r) else "" for r in body]
+        widths.append(min(22, max(3, max(len(c) for c in cells))))
+    aligns: list[str] = []
+    for spec in split_row(rows[1]):
+        if spec.startswith(":") and spec.endswith(":"):
+            aligns.append("center")
+        elif spec.endswith(":"):
+            aligns.append("right")
+        else:
+            aligns.append("left")
+
+    def line(cells: list[str]) -> str:
+        parts: list[str] = []
+        for col, width in enumerate(widths):
+            text = cells[col] if col < len(cells) else ""
+            if len(text) > width:
+                text = text[: width - 1] + "…"
+            if aligns[col] == "right":
+                parts.append(text.rjust(width))
+            elif aligns[col] == "center":
+                parts.append(text.center(width))
+            else:
+                parts.append(text.ljust(width))
+        return " │ ".join(parts).rstrip()
+
+    out = [line(header), "─┼─".join("─" * w for w in widths)]
+    out.extend(line(r) for r in body)
+    return "<pre>" + escape_html("\n".join(out)) + "</pre>"
+
+
+def split_row(line: str) -> list[str]:
+    row = line.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    return [cell.strip() for cell in row.split("|")]
+
+
+def is_table(lines: list[str], index: int) -> bool:
+    return (
+        index + 1 < len(lines)
+        and "|" in lines[index]
+        and bool(TABLE_SEP.match(lines[index + 1]))
+    )
+
+
+def inline(raw: str) -> str:
+    """Marcas en línea. El texto entra sin escapar y sale escapado."""
+    text = escape_html(raw)
+    stash: list[str] = []
+
+    def keep(fragment: str) -> str:
+        stash.append(fragment)
+        return f"\x00{len(stash) - 1}\x00"
+
+    text = re.sub(r"`([^`\n]+)`", lambda m: keep(f"<code>{m.group(1)}</code>"), text)
+
+    def link(match: re.Match) -> str:
+        label = match.group(1).strip() or match.group(2)
+        url = match.group(2).strip().replace('"', "%22")
+        return keep(f'<a href="{url}">{label}</a>')
+
+    text = re.sub(r"\[([^\]\n]*)\]\((https?://[^\s)]+)\)", link, text)
+    text = re.sub(r"\*\*(?!\s)(.+?)(?<!\s)\*\*", r"<b>\1</b>", text)
+    text = re.sub(r"(?<![\w_])__(?!\s)(.+?)(?<!\s)__(?![\w_])", r"<b>\1</b>", text)
+    text = re.sub(r"~~(?!\s)(.+?)(?<!\s)~~", r"<s>\1</s>", text)
+    text = re.sub(
+        r"(?<![\w*])\*(?![\s*])([^*\n]+?)(?<![\s*])\*(?![*\w])", r"<i>\1</i>", text
+    )
+    text = re.sub(
+        r"(?<![\w_])_(?![\s_])([^_\n]+?)(?<![\s_])_(?![\w_])", r"<i>\1</i>", text
+    )
+
+    def restore(match: re.Match) -> str:
+        idx = int(match.group(1))
+        return stash[idx] if 0 <= idx < len(stash) else ""
+
+    return re.sub(r"\x00(\d+)\x00", restore, text)
+
+
+def convert_markdown(markdown: str) -> str:
+    """Convierte el Markdown de Claude al HTML que entiende Telegram."""
+    lines = str(markdown or "").replace("\r\n", "\n").split("\n")
+    out: list[str] = []
+    total = len(lines)
+    i = 0
+    while i < total:
+        line = lines[i]
+
+        fence = FENCE_START.match(line)
+        if fence:
+            marker, lang = fence.group(1), fence.group(2)
+            i += 1
+            code: list[str] = []
+            closing = re.compile(r"^\s*" + re.escape(marker) + r"\s*$")
+            while i < total and not closing.match(lines[i]):
+                code.append(lines[i])
+                i += 1
+            if i < total:
+                i += 1
+            cls = f' class="language-{escape_html(lang)}"' if lang else ""
+            body = escape_html("\n".join(code))
+            out.append(f"<pre><code{cls}>{body}</code></pre>")
+            continue
+
+        if is_table(lines, i):
+            rows = [lines[i], lines[i + 1]]
+            i += 2
+            while i < total and "|" in lines[i] and lines[i].strip():
+                rows.append(lines[i])
+                i += 1
+            out.append(render_table(rows))
+            continue
+
+        heading = re.match(r"^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$", line)
+        if heading:
+            out.append(f"<b>{inline(heading.group(1))}</b>")
+            i += 1
+            continue
+
+        if HORIZONTAL_RULE.match(line) and "|" not in line:
+            out.append("──────────")
+            i += 1
+            continue
+
+        if line.lstrip().startswith(">"):
+            quoted: list[str] = []
+            while i < total and lines[i].lstrip().startswith(">"):
+                quoted.append(re.sub(r"^\s*>\s?", "", lines[i]))
+                i += 1
+            body = "\n".join(inline(q) for q in quoted)
+            out.append(f"<blockquote>{body}</blockquote>")
+            continue
+
+        item = re.match(r"^(\s*)[-*+]\s+(.*)$", line)
+        if item:
+            out.append(f"{item.group(1)}• {inline(item.group(2))}")
+            i += 1
+            continue
+
+        numbered = re.match(r"^(\s*)(\d+)[.)]\s+(.*)$", line)
+        if numbered:
+            out.append(
+                f"{numbered.group(1)}{numbered.group(2)}. {inline(numbered.group(3))}"
+            )
+            i += 1
+            continue
+
+        out.append(inline(line))
+        i += 1
+    return "\n".join(out)
+
+
 # ── HTTP local para el núcleo ───────────────────────────────────────────────
 
 def split_text(text: str, limit: int = MAX_TEXT) -> list[str]:
-    text = str(text or "")
+    """Parte el Markdown sin romper bloques de código entre mensajes."""
+    text = str(text or "").replace("\r\n", "\n")
     if len(text) <= limit:
         return [text] if text else []
     chunks: list[str] = []
-    rest = text
-    while len(rest) > limit:
-        cut = rest.rfind("\n", 0, limit)
-        if cut < limit // 2:
-            cut = rest.rfind(" ", 0, limit)
-        if cut < 1:
-            cut = limit
-        chunks.append(rest[:cut].rstrip())
-        rest = rest[cut:].lstrip()
-    if rest:
-        chunks.append(rest)
-    return chunks
+    buf: list[str] = []
+    size = 0
+    fence: str | None = None
+    for line in text.split("\n"):
+        opened = FENCE_ANY.match(line)
+        piece = line[:limit]
+        if buf and size + len(piece) + 1 > limit and not opened:
+            chunk = "\n".join(buf)
+            if fence:
+                chunk += "\n" + fence
+            chunks.append(chunk.rstrip())
+            buf = [fence] if fence else []
+            size = sum(len(part) + 1 for part in buf)
+        buf.append(piece)
+        size += len(piece) + 1
+        if opened:
+            marker = opened.group(1)
+            fence = None if fence == marker else marker
+    if buf:
+        chunks.append("\n".join(buf).rstrip())
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 def send_text(chat_id: str, text: str) -> list[str]:
@@ -458,15 +648,28 @@ def send_text(chat_id: str, text: str) -> list[str]:
     ids: list[str] = []
     with SEND_LOCK:
         for chunk in split_text(text):
-            result = api(
-                "sendMessage",
-                {
-                    "chat_id": target,
-                    "text": chunk,
-                    "disable_web_page_preview": True,
-                },
-                timeout=30,
-            )
+            html = convert_markdown(chunk)
+            payload = {
+                "chat_id": target,
+                "text": html if len(html) <= TELEGRAM_LIMIT else chunk,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            }
+            if len(html) > TELEGRAM_LIMIT:
+                payload.pop("parse_mode")
+            try:
+                result = api("sendMessage", payload, timeout=30)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("Telegram rechazó el formato (%s); envío sin él", exc)
+                result = api(
+                    "sendMessage",
+                    {
+                        "chat_id": target,
+                        "text": chunk,
+                        "disable_web_page_preview": True,
+                    },
+                    timeout=30,
+                )
             if result.get("message_id") is not None:
                 ids.append(str(result["message_id"]))
             if len(chunk) and chunk != text:

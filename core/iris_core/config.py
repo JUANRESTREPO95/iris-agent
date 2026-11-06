@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_SYSTEM_PROMPT = (
-    "Eres Iris, un agente personal que trabaja por WhatsApp. "
+    "Eres Iris, un agente personal que trabaja por Telegram (o WhatsApp). "
     "Hablas español, de forma breve y directa. "
     "Tienes acceso a un directorio de trabajo; úsalo para crear y modificar archivos. "
     "Cuando una tarea sea larga, resume el resultado al final en pocas líneas. "
@@ -44,7 +44,7 @@ class Config:
 def load() -> Config:
     return Config(
         phone=_env("IRIS_PHONE"),
-        channels=_env("IRIS_CHANNELS", "whatsapp"),
+        channels=_env("IRIS_CHANNELS", "telegram"),
         telegram_user=_env("IRIS_TELEGRAM_USER"),
         telegram_bridge_url=_env(
             "IRIS_TELEGRAM_BRIDGE_URL", "http://127.0.0.1:3005"

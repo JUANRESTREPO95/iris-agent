@@ -553,13 +553,13 @@ choose_channels() {
     esac
   fi
   if [[ $ASSUME_YES -eq 1 ]]; then
-    CHANNELS=whatsapp
+    CHANNELS=telegram
     return 0
   fi
   local choice
   ui_menu "Canales de Iris" "¿Por dónde quieres usar Iris?" \
-    "whatsapp::WhatsApp::conexión por QR" \
     "telegram::Telegram::bot oficial" \
+    "whatsapp::WhatsApp::conexión por QR" \
     "both::WhatsApp + Telegram::los dos a la vez" \
     || die "Selección cancelada."
   CHANNELS="$REPLY"
@@ -617,7 +617,7 @@ infer_channels_from_env() {
   elif (( tg )); then
     printf 'telegram'
   else
-    printf 'whatsapp'
+    printf 'telegram'
   fi
 }
 

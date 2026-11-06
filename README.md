@@ -1,9 +1,11 @@
 # Iris Agent
 
-Claude Code corriendo 24/7 en un servidor Linux, controlable por WhatsApp.
+Claude Code corriendo 24/7 en un servidor Linux, controlable por Telegram
+(o WhatsApp).
 
-Escribes por WhatsApp → Iris ejecuta Claude Code en un directorio de trabajo →
-te responde por el mismo chat.
+Escribes por Telegram → Iris ejecuta Claude Code en un directorio de trabajo →
+te responde por el mismo chat, con formato (negrita, tablas y bloques de
+código).
 
 ```
 WhatsApp ──► iris-bridge (Node + Baileys) ──HTTP+token──► iris-core (Python)
@@ -46,8 +48,8 @@ curl -fsSL https://raw.githubusercontent.com/JUANRESTREPO95/iris-agent/main/inst
 El instalador pregunta primero **por dónde quieres usar Iris**:
 
 ```
-1) WhatsApp
-2) Telegram
+1) Telegram        (por defecto)
+2) WhatsApp
 3) WhatsApp + Telegram
 ```
 
