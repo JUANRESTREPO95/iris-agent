@@ -328,7 +328,7 @@ usage() {
 Uso: iris <comando>
 
   status                 estado de servicios y salud
-  logs [core|bridge|ollama|install]   seguir logs
+  logs [core|bridge|telegram|ollama|install]   seguir logs
   pair                   volver a parear WhatsApp
   telegram [token] [id]  añadir o actualizar el bot de Telegram
   model [nombre]         ver o cambiar el modelo
