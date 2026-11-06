@@ -6,7 +6,8 @@ HTTP local, igual que el puente de WhatsApp.
 
 Variables (vienen de /etc/iris/iris.env):
   IRIS_TELEGRAM_TOKEN          token de @BotFather
-  IRIS_TELEGRAM_ALLOWED_USER   id numérico autorizado (o "*")
+  IRIS_TELEGRAM_USER           id numérico autorizado (o "*")
+                               (también acepta IRIS_TELEGRAM_ALLOWED_USER)
   IRIS_TELEGRAM_BRIDGE_PORT    puerto local (3005)
   IRIS_TELEGRAM_API_BASE       por defecto https://api.telegram.org
   IRIS_CORE_URL                http://127.0.0.1:3004
@@ -30,7 +31,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 TOKEN = (os.environ.get("IRIS_TELEGRAM_TOKEN") or "").strip()
-ALLOWED = (os.environ.get("IRIS_TELEGRAM_ALLOWED_USER") or "").strip()
+ALLOWED = (
+    os.environ.get("IRIS_TELEGRAM_ALLOWED_USER")
+    or os.environ.get("IRIS_TELEGRAM_USER")
+    or ""
+).strip()
 PORT = int((os.environ.get("IRIS_TELEGRAM_BRIDGE_PORT") or "3005").strip())
 API_BASE = (os.environ.get("IRIS_TELEGRAM_API_BASE") or "https://api.telegram.org").rstrip("/")
 CORE_URL = (os.environ.get("IRIS_CORE_URL") or "http://127.0.0.1:3004").rstrip("/")
