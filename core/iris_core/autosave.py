@@ -82,7 +82,9 @@ class AutoSaveWatcher(threading.Thread):
                 continue
             if now - last_user < self.idle_seconds:
                 continue
-            if self.db.has_pending(chat_id, "guardar_auto"):
+            if self.db.has_pending(chat_id, "guardar_auto") or self.db.has_pending(
+                chat_id, "guardar"
+            ):
                 continue
             if self.db.enqueue(
                 {

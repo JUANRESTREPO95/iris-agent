@@ -226,6 +226,9 @@ class Worker(threading.Thread):
         if result.ok:
             reply = result.text
             self.db.mark(row["id"], "respondido")
+            if kind == "guardar":
+                # Un guardado manual también reinicia el reloj del automático.
+                self.db.set_autosave(chat_id, project, time.time())
             self.db.audit(
                 "job_ok",
                 f"proj={project} dur={result.duration:.1f}s chars={len(reply)}",
