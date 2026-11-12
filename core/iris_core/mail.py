@@ -19,10 +19,12 @@ Variables (todas opcionales y apagadas por defecto):
 
 from __future__ import annotations
 
+import base64
 import email
 import html
 import imaplib
 import logging
+import quopri
 import re
 import threading
 import time
@@ -42,7 +44,7 @@ log = logging.getLogger("iris.mail")
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
 IMAP_TIMEOUT = 30
-BODY_LIMIT = 16384
+BODY_LIMIT = 65536
 SUMMARY_CHARS = 400
 AUTH_BACKOFF = 300
 NETWORK_BACKOFF = 60
@@ -196,11 +198,10 @@ class MailWatcher(threading.Thread):
         uid: int,
     ) -> str | None:
         """Procesa un UID. Devuelve 'sent', 'skipped' o None si hay que parar."""
-        header = _fetch(
-            client,
-            uid,
-            "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])",
-        )
+        # Se piden TODAS las cabeceras: sin Content-Type, boundary ni
+        # Content-Transfer-Encoding el parser no puede deshacer quoted-printable
+        # ni base64 y el aviso acaba mostrando el MIME en crudo.
+        header = _fetch(client, uid, "(BODY.PEEK[HEADER])")
         body = _fetch(client, uid, f"(BODY.PEEK[TEXT]<0.{BODY_LIMIT}>)")
         if not header and not body:
             # El correo pudo borrarse entre la búsqueda y el fetch: no bloquees
@@ -208,7 +209,7 @@ class MailWatcher(threading.Thread):
             log.warning("correo uid=%s: no pude leerlo, lo salto", uid)
             self.db.set_mail_state(self.cfg.mail_user, folder, uidvalidity, uid)
             return "skipped"
-        message = email.message_from_bytes(header + b"\r\n\r\n" + body)
+        message = email.message_from_bytes(header.rstrip() + b"\r\n\r\n" + body)
 
         subject = _header(message, "Subject") or "(sin asunto)"
         sender = _header(message, "From") or "(sin remitente)"
@@ -267,38 +268,91 @@ def _header(message: Message, name: str) -> str:
         return str(raw).strip()
 
 
+_ZERO_WIDTH = re.compile(r"[​‌‍﻿­]")
+_IMAGE_TAG = re.compile(r"\[image:[^\]]*\]", re.IGNORECASE)
+_MIME_HEADER = re.compile(
+    r"(?im)^(content-type|content-transfer-encoding|content-disposition|"
+    r"mime-version):.*$"
+)
+_MIME_BOUNDARY = re.compile(r"(?m)^--[=\-_A-Za-z0-9.]+.*$")
+
+
 def _summary(message: Message, limit: int = SUMMARY_CHARS) -> str:
     text = _text_body(message)
+    text = _ZERO_WIDTH.sub("", text)
+    text = _IMAGE_TAG.sub(" ", text)
+    if _looks_like_raw_mime(text):
+        text = _clean_raw_mime(text)
     text = re.sub(r"\s+", " ", text).strip()
     if len(text) > limit:
         text = text[:limit].rstrip() + "…"
     return text
 
 
+def _looks_like_raw_mime(text: str) -> bool:
+    lowered = text.lower()
+    return "content-transfer-encoding:" in lowered or "content-type:" in lowered
+
+
+def _clean_raw_mime(text: str) -> str:
+    """Quita cabeceras/boundaries y deshace la codificación si quedó en crudo."""
+    match = re.search(
+        r"(?im)^content-transfer-encoding:\s*([^\s;]+)", text
+    )
+    encoding = match.group(1).lower() if match else ""
+    text = _MIME_HEADER.sub(" ", text)
+    text = _MIME_BOUNDARY.sub(" ", text)
+    if encoding == "quoted-printable":
+        return quopri.decodestring(text.encode("utf-8", "replace")).decode(
+            "utf-8", "replace"
+        )
+    if encoding == "base64":
+        cleaned = re.sub(r"\s+", "", text)
+        cleaned += "=" * (-len(cleaned) % 4)
+        try:
+            return base64.b64decode(cleaned, validate=False).decode(
+                "utf-8", "replace"
+            )
+        except Exception:  # noqa: BLE001
+            return ""
+    return text
+
+
 def _text_body(message: Message) -> str:
     if message.is_multipart():
-        parts = [
-            part
-            for part in message.walk()
-            if "attachment"
-            not in str(part.get("Content-Disposition") or "").lower()
-        ]
-        for part in parts:
-            if part.get_content_type() == "text/plain":
-                return _decode(part)
-        for part in parts:
-            if part.get_content_type() == "text/html":
-                return _strip_html(_decode(part))
+        plain: list[str] = []
+        rich: list[str] = []
+        for part in message.walk():
+            if part.is_multipart():
+                continue
+            if "attachment" in str(
+                part.get("Content-Disposition") or ""
+            ).lower():
+                continue
+            ctype = part.get_content_type()
+            if ctype == "text/plain":
+                text = _decode(part).strip()
+                if text:
+                    plain.append(text)
+            elif ctype == "text/html":
+                text = _strip_html(_decode(part)).strip()
+                if text:
+                    rich.append(text)
+        # Primero el texto plano; si solo hay HTML, se limpia el HTML.
+        return "\n\n".join(plain or rich)
+    content_type = message.get_content_type()
+    if not content_type.startswith("text/"):
         return ""
     text = _decode(message)
-    return _strip_html(text) if message.get_content_type() == "text/html" else text
+    return _strip_html(text) if content_type == "text/html" else text
 
 
 def _decode(part: Message) -> str:
     try:
-        payload = part.get_payload(decode=True)
+        payload = part.get_payload(decode=True) or b""
     except Exception:  # noqa: BLE001
-        return ""
+        # Base64 truncado por el límite de cuerpo: se intenta a mano.
+        payload = _raw_payload(part)
     if not payload:
         return ""
     charset = part.get_content_charset() or "utf-8"
@@ -306,6 +360,23 @@ def _decode(part: Message) -> str:
         return payload.decode(charset, "replace")
     except LookupError:
         return payload.decode("utf-8", "replace")
+
+
+def _raw_payload(part: Message) -> bytes:
+    raw = part.get_payload(decode=False)
+    if not isinstance(raw, str):
+        return b""
+    encoding = str(part.get("Content-Transfer-Encoding") or "").lower()
+    if "base64" in encoding:
+        cleaned = re.sub(r"\s+", "", raw)
+        cleaned += "=" * (-len(cleaned) % 4)
+        try:
+            return base64.b64decode(cleaned, validate=False)
+        except Exception:  # noqa: BLE001
+            return b""
+    if "quoted-printable" in encoding:
+        return quopri.decodestring(raw.encode("utf-8", "replace"))
+    return raw.encode("utf-8", "replace")
 
 
 def _strip_html(text: str) -> str:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import email
 import tempfile
 import unittest
@@ -40,6 +41,7 @@ def message(
     body: str = "Contenido del correo",
     message_id: str = "<m1@example.com>",
     content_type: str = "text/plain",
+    transfer_encoding: str = "",
 ) -> dict:
     headers = (
         f"From: {sender}\r\n"
@@ -48,9 +50,20 @@ def message(
         f"Message-ID: {message_id}\r\n"
         "MIME-Version: 1.0\r\n"
         f"Content-Type: {content_type}; charset=utf-8\r\n"
-        "\r\n"
+        + (
+            f"Content-Transfer-Encoding: {transfer_encoding}\r\n"
+            if transfer_encoding
+            else ""
+        )
+        + "\r\n"
     ).encode("utf-8")
     return {"headers": headers, "body": body.encode("utf-8")}
+
+
+def raw_message(raw: bytes) -> dict:
+    """Divide un correo completo en cabeceras y cuerpo, como hace IMAP."""
+    header, _, body = raw.partition(b"\r\n\r\n")
+    return {"headers": header + b"\r\n\r\n", "body": body}
 
 
 class FakeIMAP:
@@ -92,7 +105,7 @@ class FakeIMAP:
             item = self.messages.get(uid)
             if item is None:
                 return "NO", [b""]
-            data = item["headers"] if "HEADER.FIELDS" in spec else item["body"]
+            data = item["headers"] if "HEADER" in spec else item["body"]
             return "OK", [(f"1 (BODY[] {{{len(data)}}}".encode(), data)]
         if command == "store":
             self.stored.append((int(args[0]), str(args[1]), str(args[2])))
@@ -202,6 +215,88 @@ class NewMailTest(MailTester):
             self.tick()
         self.assertEqual(send.call_count, 2)
         self.assertEqual(self.state()["last_uid"], 3)
+
+
+class MimeTest(MailTester):
+    def setUp(self):
+        super().setUp()
+        self.imap.messages[1] = message()
+        self.tick()  # deja la base en UID 1
+
+    def _aviso(self, uid: int, raw: bytes) -> str:
+        self.imap.messages[uid] = raw_message(raw)
+        with mock.patch.object(
+            mail.bridge, "send_text", return_value=True
+        ) as send:
+            self.tick()
+        send.assert_called_once()
+        return send.call_args.args[2]
+
+    def test_quoted_printable_no_se_muestra_en_crudo(self):
+        raw = (
+            b"From: Hostinger <team@emails.hostinger.com>\r\n"
+            b"Subject: Tu carrito sigue guardado\r\n"
+            b"Message-ID: <qp@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b'Content-Type: multipart/alternative; boundary="b"\r\n'
+            b"\r\n"
+            b"--b\r\n"
+            b'Content-Type: text/plain; charset="UTF-8"\r\n'
+            b"Content-Transfer-Encoding: quoted-printable\r\n"
+            b"\r\n"
+            b"Tu carrito sigue guardado=0A=0A=0AAqu=C3=AD tienes un 10% de "
+            b"descuento\r\n"
+            b"--b--\r\n"
+        )
+        text = self._aviso(2, raw)
+        self.assertIn("Tu carrito sigue guardado", text)
+        self.assertIn("Aquí tienes un 10% de descuento", text)
+        self.assertNotIn("=0A", text)
+        self.assertNotIn("quoted-printable", text.lower())
+        self.assertNotIn("--b", text)
+
+    def test_base64_se_decodifica(self):
+        cuerpo = base64.b64encode(
+            "Nuevo acceso en el dispositivo Linux".encode("utf-8")
+        ).decode("ascii")
+        raw = (
+            b"From: Google <no-reply@accounts.google.com>\r\n"
+            b"Subject: Alerta de seguridad\r\n"
+            b"Message-ID: <b64@example.com>\r\n"
+            b"MIME-Version: 1.0\r\n"
+            b'Content-Type: text/plain; charset="UTF-8"\r\n'
+            b"Content-Transfer-Encoding: base64\r\n"
+            b"\r\n"
+            + cuerpo.encode("ascii")
+            + b"\r\n"
+        )
+        text = self._aviso(2, raw)
+        self.assertIn("Nuevo acceso en el dispositivo Linux", text)
+        self.assertNotIn("base64", text.lower())
+        self.assertNotIn(cuerpo[:20], text)
+
+    def test_restos_de_mime_se_limpian(self):
+        raw = email.message_from_string(
+            "From: ana@example.com\n"
+            "Subject: Hola\n"
+            "Content-Type: text/plain; charset=utf-8\n\n"
+            "Content-Transfer-Encoding: quoted-printable\n"
+            "Content-Type: text/plain; charset=utf-8\n\n"
+            "Hola=0Amundo"
+        )
+        self.assertEqual(mail._summary(raw), "Hola mundo")
+
+    def test_ignora_caracteres_invisibles_y_etiquetas_de_imagen(self):
+        raw = email.message_from_bytes(
+            (
+                "From: ana@example.com\n"
+                "Subject: Hola\n"
+                "Content-Type: text/plain; charset=utf-8\n\n"
+            ).encode("utf-8")
+            + "\u200b".encode("utf-8") * 2
+            + b"[image: Google] Nuevo acceso"
+        )
+        self.assertEqual(mail._summary(raw), "Nuevo acceso")
 
 
 class QuietTest(MailTester):
