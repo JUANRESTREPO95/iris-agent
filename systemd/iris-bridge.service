@@ -1,0 +1,23 @@
+[Unit]
+Description=Iris - puente de WhatsApp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iris
+Group=iris
+WorkingDirectory=/opt/iris/bridge
+EnvironmentFile=/etc/iris/iris.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/env node /opt/iris/bridge/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

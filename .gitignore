@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+node_modules/
+.venv/
+*.log
+.env
+.DS_Store
+
+# Análisis interno (código de terceros y datos del servidor)
+research/
+

@@ -1,0 +1,15 @@
+.git
+.gitignore
+.dockerignore
+.env
+.env.*
+!.env.example
+__pycache__
+*.py[cod]
+.venv
+core/venv
+node_modules
+bridge/node_modules
+research
+*.log
+.DS_Store

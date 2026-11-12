@@ -1,0 +1,24 @@
+[Unit]
+Description=Iris - núcleo del agente
+After=network-online.target iris-ollama.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=iris
+Group=iris
+WorkingDirectory=/opt/iris/core
+EnvironmentFile=/etc/iris/iris.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=HOME=/home/iris
+ExecStart=/opt/iris/core/venv/bin/python -m iris_core
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

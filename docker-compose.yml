@@ -1,0 +1,147 @@
+# Iris Agent en Docker.
+#
+#   cp .env.example .env   # edita canales, token interno y proveedor
+#   docker compose up -d --build
+#
+# Servicios: iris-core (siempre), iris-bridge (WhatsApp), iris-telegram
+# (Telegram) e iris-ollama. Los puentes que no correspondan a IRIS_CHANNELS
+# salen solos y quedan detenidos.
+
+services:
+  iris-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iris-agent:local
+    restart: unless-stopped
+    working_dir: /opt/iris/core
+    command: ["/opt/iris/core/venv/bin/python", "-m", "iris_core"]
+    environment:
+      IRIS_CHANNELS: "${IRIS_CHANNELS:-telegram}"
+      IRIS_PHONE: "${IRIS_PHONE:-}"
+      IRIS_TELEGRAM_USER: "${IRIS_TELEGRAM_USER:-}"
+      IRIS_TELEGRAM_BRIDGE_URL: "http://iris-telegram:3005"
+      IRIS_PROVIDER: "${IRIS_PROVIDER:-ollama-local}"
+      IRIS_MODEL: "${IRIS_MODEL-deepseek-v4.1-flash:cloud}"
+      IRIS_WORKSPACE: "/home/iris/workspace"
+      IRIS_DATA: "/var/lib/iris"
+      IRIS_OUTBOX: "${IRIS_OUTBOX:-/var/lib/iris/outbox}"
+      IRIS_MAX_FILE_MB: "${IRIS_MAX_FILE_MB:-100}"
+      IRIS_BRIDGE_URL: "http://iris-bridge:3003"
+      IRIS_BRIDGE_TOKEN: "${IRIS_BRIDGE_TOKEN:?Define IRIS_BRIDGE_TOKEN en el entorno o en .env}"
+      IRIS_CORE_BIND: "0.0.0.0"
+      IRIS_CORE_PORT: "3004"
+      IRIS_CLAUDE_BIN: "/usr/local/bin/claude"
+      IRIS_CLAUDE_TIMEOUT: "${IRIS_CLAUDE_TIMEOUT:-1800}"
+      IRIS_PERMISSION_MODE: "${IRIS_PERMISSION_MODE:-bypassPermissions}"
+      IRIS_MAX_CHARS: "${IRIS_MAX_CHARS:-4000}"
+      IRIS_SYSTEM_PROMPT: "${IRIS_SYSTEM_PROMPT:-}"
+      ANTHROPIC_BASE_URL: "${ANTHROPIC_BASE_URL-http://iris-ollama:11434}"
+      ANTHROPIC_AUTH_TOKEN: "${ANTHROPIC_AUTH_TOKEN-ollama}"
+      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY-}"
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN:-}"
+      NOTAS_API_URL: "${NOTAS_API_URL:-}"
+      NOTAS_API_URLS: "${NOTAS_API_URLS:-}"
+      NOTAS_API_TOKEN: "${NOTAS_API_TOKEN:-}"
+      IRIS_MEMORY_MODE: "${IRIS_MEMORY_MODE:-manual}"
+      IRIS_REMINDERS: "${IRIS_REMINDERS:-off}"
+      IRIS_REMINDER_INTERVAL: "${IRIS_REMINDER_INTERVAL:-60}"
+      IRIS_REMINDER_CHANNEL: "${IRIS_REMINDER_CHANNEL:-auto}"
+      IRIS_TIMEZONE: "${IRIS_TIMEZONE:-America/Bogota}"
+      IRIS_MAIL: "${IRIS_MAIL:-off}"
+      IRIS_MAIL_USER: "${IRIS_MAIL_USER:-}"
+      IRIS_MAIL_APP_PASSWORD: "${IRIS_MAIL_APP_PASSWORD:-}"
+      IRIS_MAIL_INTERVAL: "${IRIS_MAIL_INTERVAL:-60}"
+      IRIS_MAIL_CHANNEL: "${IRIS_MAIL_CHANNEL:-auto}"
+      IRIS_MAIL_FOLDER: "${IRIS_MAIL_FOLDER:-INBOX}"
+      IRIS_MAIL_QUIET: "${IRIS_MAIL_QUIET:-}"
+      IRIS_MAIL_MAX_PER_TICK: "${IRIS_MAIL_MAX_PER_TICK:-5}"
+    volumes:
+      - iris-data:/var/lib/iris
+      - iris-home:/home/iris
+      - iris-workspace:/home/iris/workspace
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3004/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  iris-bridge:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iris-agent:local
+    restart: on-failure
+    working_dir: /opt/iris/bridge
+    command: ["node", "/opt/iris/bridge/server.js"]
+    environment:
+      IRIS_CHANNELS: "${IRIS_CHANNELS:-telegram}"
+      IRIS_PHONE: "${IRIS_PHONE:-}"
+      IRIS_BRIDGE_PORT: "3003"
+      IRIS_BRIDGE_BIND: "0.0.0.0"
+      IRIS_BRIDGE_TOKEN: "${IRIS_BRIDGE_TOKEN:?Define IRIS_BRIDGE_TOKEN en el entorno o en .env}"
+      IRIS_CORE_URL: "http://iris-core:3004"
+      IRIS_DATA: "/var/lib/iris"
+      IRIS_OUTBOX: "${IRIS_OUTBOX:-/var/lib/iris/outbox}"
+      IRIS_MAX_FILE_MB: "${IRIS_MAX_FILE_MB:-100}"
+      IRIS_WA_SESSION: "/var/lib/iris/whatsapp-session"
+      IRIS_ALLOWED_HOSTS: "127.0.0.1,localhost,iris-core,iris-bridge,iris-telegram"
+    volumes:
+      - iris-data:/var/lib/iris
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3003/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  iris-telegram:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: iris-agent:local
+    restart: on-failure
+    command: ["python3", "/opt/iris/telegram/bot.py"]
+    environment:
+      IRIS_CHANNELS: "${IRIS_CHANNELS:-telegram}"
+      IRIS_TELEGRAM_TOKEN: "${IRIS_TELEGRAM_TOKEN:-}"
+      IRIS_TELEGRAM_USER: "${IRIS_TELEGRAM_USER:-}"
+      IRIS_TELEGRAM_BRIDGE_PORT: "3005"
+      IRIS_TELEGRAM_BIND: "0.0.0.0"
+      IRIS_CORE_URL: "http://iris-core:3004"
+      IRIS_BRIDGE_TOKEN: "${IRIS_BRIDGE_TOKEN:?Define IRIS_BRIDGE_TOKEN en el entorno o en .env}"
+      IRIS_DATA: "/var/lib/iris"
+      IRIS_OUTBOX: "${IRIS_OUTBOX:-/var/lib/iris/outbox}"
+      IRIS_MAX_FILE_MB: "${IRIS_MAX_FILE_MB:-100}"
+      IRIS_ALLOWED_HOSTS: "127.0.0.1,localhost,iris-core,iris-bridge,iris-telegram"
+    volumes:
+      - iris-data:/var/lib/iris
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:3005/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  iris-ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  iris-data:
+  iris-home:
+  iris-workspace:
+  ollama-data:
