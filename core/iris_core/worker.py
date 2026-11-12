@@ -93,6 +93,19 @@ class Worker(threading.Thread):
         project_dir.mkdir(parents=True, exist_ok=True)
 
         session_id = self.db.get_session(chat_id, project)
+        max_hours = float(getattr(self.cfg, "session_max_hours", 0.0) or 0.0)
+        if session_id:
+            created = self.db.session_created_at(chat_id, project)
+            if session_expired(created, max_hours):
+                log.info(
+                    "sesión %s de %s/%s cumplió %.1f h; inicio una nueva",
+                    session_id[:8],
+                    chat_id,
+                    project,
+                    max_hours,
+                )
+                self.db.clear_session(chat_id, project)
+                session_id = None
         is_new = session_id is None
         if is_new:
             session_id = str(uuid.uuid4())
@@ -259,6 +272,16 @@ class Worker(threading.Thread):
     def _typing_loop(self, chat_id: str, stop: threading.Event) -> None:
         while not stop.wait(4):
             bridge.send_typing(self.cfg, chat_id)
+
+
+def session_expired(
+    created_at: float | None, max_hours: float, now: float | None = None
+) -> bool:
+    """True si la sesión superó su vida útil. `max_hours=0` desactiva el corte."""
+    if not created_at or max_hours <= 0:
+        return False
+    current = time.time() if now is None else now
+    return current - created_at >= max_hours * 3600
 
 
 def _looks_like_missing_session(error: str) -> bool:

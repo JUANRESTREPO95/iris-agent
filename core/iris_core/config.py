@@ -34,6 +34,14 @@ def _secret(name: str) -> str:
         return ""
 
 
+def _hours(name: str, default: float) -> float:
+    """Horas como número positivo; 0 desactiva la función."""
+    try:
+        return max(0.0, float(_env(name, str(default)) or default))
+    except ValueError:
+        return default
+
+
 def _notas_urls() -> tuple[str, ...]:
     """URLs de Notas en orden de preferencia.
 
@@ -88,6 +96,7 @@ class Config:
     mail_folder: str
     mail_quiet: str
     mail_max_per_tick: int
+    session_max_hours: float
 
 
 def load() -> Config:
@@ -132,4 +141,5 @@ def load() -> Config:
         mail_folder=_env("IRIS_MAIL_FOLDER", "INBOX"),
         mail_quiet=_env("IRIS_MAIL_QUIET"),
         mail_max_per_tick=max(1, int(_env("IRIS_MAIL_MAX_PER_TICK", "5") or 5)),
+        session_max_hours=_hours("IRIS_SESSION_MAX_HOURS", 12.0),
     )

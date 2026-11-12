@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     chat_id    TEXT NOT NULL,
     project    TEXT NOT NULL,
     session_id TEXT NOT NULL,
+    created_at REAL NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL,
     PRIMARY KEY (chat_id, project)
 );
@@ -88,6 +89,16 @@ class DB:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
             if "kind" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT")
+            session_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(sessions)")
+            }
+            if "created_at" not in session_columns:
+                conn.execute(
+                    "ALTER TABLE sessions ADD COLUMN created_at REAL NOT NULL DEFAULT 0"
+                )
+                conn.execute(
+                    "UPDATE sessions SET created_at = updated_at WHERE created_at = 0"
+                )
             # Si el proceso murió a mitad de una tarea, ese mensaje vuelve a la cola.
             conn.execute(
                 "UPDATE messages SET status = 'nuevo' WHERE status = 'procesando'"
@@ -202,14 +213,29 @@ class DB:
             return row["session_id"] if row else None
 
     def set_session(self, chat_id: str, project: str, session_id: str) -> None:
+        now = time.time()
         with self._conn() as conn:
             conn.execute(
                 """
-                INSERT INTO sessions (chat_id, project, session_id, updated_at) VALUES (?, ?, ?, ?)
-                ON CONFLICT(chat_id, project) DO UPDATE SET session_id = excluded.session_id, updated_at = excluded.updated_at
+                INSERT INTO sessions (chat_id, project, session_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, project) DO UPDATE SET
+                    session_id = excluded.session_id,
+                    updated_at = excluded.updated_at
                 """,
-                (chat_id, project, session_id, time.time()),
+                (chat_id, project, session_id, now, now),
             )
+
+    def session_created_at(self, chat_id: str, project: str) -> Optional[float]:
+        """Momento en que nació la sesión actual (0/None si no hay)."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT created_at FROM sessions WHERE chat_id = ? AND project = ?",
+                (chat_id, project),
+            ).fetchone()
+        if not row:
+            return None
+        return float(row["created_at"] or 0) or None
 
     def clear_session(self, chat_id: str, project: str) -> None:
         with self._conn() as conn:

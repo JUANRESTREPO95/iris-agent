@@ -247,6 +247,16 @@ NOTAS_API_TOKEN=nsk_...
 - Si Notas no responde, Iris sigue con la última copia en caché.
 - La misma estructura sirve si usas solo Claude Code como memoria, sin Iris.
 
+## Sesiones
+
+- Cada chat y proyecto tiene su propia sesión de Claude Code. Iris la guarda en
+  SQLite y la reanuda en el siguiente mensaje.
+- `IRIS_SESSION_MAX_HOURS` (12 por defecto) corta la sesión cuando cumple esas
+  horas y empieza una nueva **sin avisar**. El `contexto.md` del proyecto y
+  `configuracion.md` se siguen usando, así que no se pierde la memoria.
+- `0` desactiva el corte automático. `/nuevo` sigue disponible para cortarla a
+  mano.
+
 ## Recordatorios (solo Iris)
 
 Con Notas configurado, el instalador pregunta si quieres activarlos.
