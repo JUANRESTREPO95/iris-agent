@@ -107,6 +107,9 @@ class Config:
     session_max_hours: float
     session_tail_chars: int
     autosave_hours: float
+    transcribe: bool
+    transcribe_model: str
+    transcribe_lang: str
 
 
 def load() -> Config:
@@ -154,4 +157,7 @@ def load() -> Config:
         session_max_hours=_hours("IRIS_SESSION_MAX_HOURS", 12.0),
         session_tail_chars=_count("IRIS_SESSION_TAIL_CHARS", 4000),
         autosave_hours=_hours("IRIS_AUTOSAVE_HOURS", 6.0),
+        transcribe=_env("IRIS_TRANSCRIBE", "off").lower() in {"1", "on", "true", "yes", "si"},
+        transcribe_model=_env("IRIS_TRANSCRIBE_MODEL", "base").strip() or "base",
+        transcribe_lang=_env("IRIS_TRANSCRIBE_LANG", "es").strip(),
     )

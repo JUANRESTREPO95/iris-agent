@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from . import bridge, claude, notas
+from . import bridge, claude, notas, transcribe
 from .config import Config
 from .db import DB
 
@@ -122,6 +122,10 @@ class Worker(threading.Thread):
             prompt += (
                 f"\n\n[Adjunto: {row['media_path']} ({row['media_kind'] or 'archivo'})]"
             )
+            if (row["media_kind"] or "") == "audio" and transcribe.configured(self.cfg):
+                texto = transcribe.transcribe(self.cfg, row["media_path"])
+                if texto:
+                    prompt += f"\n\n[Transcripción del audio]\n{texto}"
         if not prompt.strip():
             prompt = "(mensaje vacío)"
 

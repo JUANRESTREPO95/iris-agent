@@ -59,6 +59,9 @@ services:
       IRIS_MAIL_FOLDER: "${IRIS_MAIL_FOLDER:-INBOX}"
       IRIS_MAIL_QUIET: "${IRIS_MAIL_QUIET:-}"
       IRIS_MAIL_MAX_PER_TICK: "${IRIS_MAIL_MAX_PER_TICK:-5}"
+      IRIS_TRANSCRIBE: "${IRIS_TRANSCRIBE:-off}"
+      IRIS_TRANSCRIBE_MODEL: "${IRIS_TRANSCRIBE_MODEL:-base}"
+      IRIS_TRANSCRIBE_LANG: "${IRIS_TRANSCRIBE_LANG:-es}"
     volumes:
       - iris-data:/var/lib/iris
       - iris-home:/home/iris
