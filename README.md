@@ -239,6 +239,10 @@ NOTAS_API_TOKEN=nsk_...
   intercambio en `proyectos/<nombre>/conversacion.md`).
 - `/proyecto <nombre>` crea y sincroniza `proyectos/<nombre>` en Notas.
 - `/guardar` resume lo importante y actualiza `proyectos/<nombre>/contexto.md`.
+- `IRIS_AUTOSAVE_HOURS` (6 por defecto; `0` lo desactiva) hace ese guardado
+  automáticamente cada N horas, **sin avisar** por el chat. Solo guarda el
+  proyecto activo de cada chat con actividad reciente, espera 10 minutos de
+  inactividad y los mensajes del usuario tienen prioridad en la cola.
 - El `contexto.md` de cada proyecto se añade al prompt de Iris, para no perder
   el hilo.
 - Si borras un proyecto en Notas, Iris avisa por el canal; para borrar también
@@ -254,6 +258,9 @@ NOTAS_API_TOKEN=nsk_...
 - `IRIS_SESSION_MAX_HOURS` (12 por defecto) corta la sesión cuando cumple esas
   horas y empieza una nueva **sin avisar**. El `contexto.md` del proyecto y
   `configuracion.md` se siguen usando, así que no se pierde la memoria.
+- Al empezar una sesión nueva se añaden los últimos
+  `IRIS_SESSION_TAIL_CHARS` caracteres de `proyectos/<proyecto>/conversacion.md`
+  (4.000 por defecto; `0` lo desactiva), para conservar el hilo reciente.
 - `0` desactiva el corte automático. `/nuevo` sigue disponible para cortarla a
   mano.
 

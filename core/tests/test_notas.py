@@ -97,6 +97,31 @@ class MemoryContextTest(unittest.TestCase):
         self.assertEqual(calls, ["http://uno/api/tree", "http://dos/api/tree"])
         self.assertEqual(notas._ACTIVE["url"], "http://dos")
 
+    def test_conversation_tail_recorta_y_empieza_en_bloque(self):
+        tree = {"notes": [{"id": "c", "path": "proyectos/demo/conversacion.md"}]}
+        content = (
+            "### viejo\n\n"
+            + ("x" * 500)
+            + "\n### nuevo\n\n**Usuario:** hola\n**Iris:** qué tal\n"
+        )
+        with mock.patch.object(
+            notas, "_get", side_effect=[tree, {"id": "c", "content": content}]
+        ):
+            tail = notas.conversation_tail(self.cfg(), "demo", 120)
+        self.assertIn("### nuevo", tail)
+        self.assertNotIn("### viejo", tail)
+        self.assertLessEqual(len(tail), 120)
+
+    def test_conversation_tail_desactivado_no_lee(self):
+        with mock.patch.object(notas, "_get") as get:
+            self.assertEqual(notas.conversation_tail(self.cfg(), "demo", 0), "")
+            get.assert_not_called()
+
+    def test_guardar_prompt_nombra_contexto_y_conversacion(self):
+        prompt = notas.guardar_prompt("demo")
+        self.assertIn("proyectos/demo/contexto.md", prompt)
+        self.assertIn("proyectos/demo/conversacion.md", prompt)
+
     def test_4xx_no_hace_failover(self):
         cfg = self.cfg(url="http://uno", urls=["http://uno", "http://dos"])
         calls = []

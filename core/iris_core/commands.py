@@ -93,8 +93,9 @@ def handle(cfg: Config, db: DB, worker: Worker, chat_id: str, text: str) -> str:
             {
                 "chatId": chat_id,
                 "senderId": chat_id,
-                "text": _guardar_prompt(project),
+                "text": notas.guardar_prompt(project),
                 "kind": "guardar",
+                "project": project,
             }
         )
         if not queued:
@@ -280,23 +281,6 @@ def _all_projects(cfg: Config) -> list[str]:
     if notas.configured(cfg):
         names |= set(notas.list_projects(cfg))
     return sorted(names)
-
-
-def _guardar_prompt(project: str) -> str:
-    return f"""Guarda la conversación actual en la memoria del proyecto «{project}».
-
-Usa la API de Notas que ya tienes en el entorno:
-- Base: $NOTAS_API_URL o la primera de $NOTAS_API_URLS (separadas por comas)
-  que responda; cabecera: Authorization: Bearer $NOTAS_API_TOKEN.
-- GET /api/tree para encontrar la nota con path `proyectos/{project}/contexto.md`.
-- GET /api/notes/<id> para leerla.
-- PUT /api/notes/<id> con {{"content": "<contenido completo>"}} para actualizarla.
-- Si no existe, créala con POST /api/notes
-  {{"folder": "proyectos/{project}", "title": "Contexto", "content": "..."}}.
-
-Resume solo lo importante: contexto, decisiones, pendientes y referencias.
-No copies la conversación entera ni repitas lo que ya esté.
-Después responde únicamente: Guardado."""
 
 
 def _age(current: dict) -> float:

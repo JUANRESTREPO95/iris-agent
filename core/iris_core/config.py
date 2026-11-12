@@ -42,6 +42,14 @@ def _hours(name: str, default: float) -> float:
         return default
 
 
+def _count(name: str, default: int) -> int:
+    """Entero no negativo; 0 desactiva la función."""
+    try:
+        return max(0, int(_env(name, str(default)) or default))
+    except ValueError:
+        return default
+
+
 def _notas_urls() -> tuple[str, ...]:
     """URLs de Notas en orden de preferencia.
 
@@ -97,6 +105,8 @@ class Config:
     mail_quiet: str
     mail_max_per_tick: int
     session_max_hours: float
+    session_tail_chars: int
+    autosave_hours: float
 
 
 def load() -> Config:
@@ -142,4 +152,6 @@ def load() -> Config:
         mail_quiet=_env("IRIS_MAIL_QUIET"),
         mail_max_per_tick=max(1, int(_env("IRIS_MAIL_MAX_PER_TICK", "5") or 5)),
         session_max_hours=_hours("IRIS_SESSION_MAX_HOURS", 12.0),
+        session_tail_chars=_count("IRIS_SESSION_TAIL_CHARS", 4000),
+        autosave_hours=_hours("IRIS_AUTOSAVE_HOURS", 6.0),
     )

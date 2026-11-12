@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS messages (
     media_path  TEXT,
     media_kind  TEXT,
     kind        TEXT,
+    project     TEXT,
     status      TEXT NOT NULL DEFAULT 'nuevo',
     attempts    INTEGER NOT NULL DEFAULT 0,
     error       TEXT,
@@ -39,6 +40,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT NOT NULL,
     created_at REAL NOT NULL DEFAULT 0,
     updated_at REAL NOT NULL,
+    PRIMARY KEY (chat_id, project)
+);
+
+CREATE TABLE IF NOT EXISTS autosave_state (
+    chat_id  TEXT NOT NULL,
+    project  TEXT NOT NULL,
+    saved_at REAL NOT NULL,
     PRIMARY KEY (chat_id, project)
 );
 
@@ -89,6 +97,8 @@ class DB:
             columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
             if "kind" not in columns:
                 conn.execute("ALTER TABLE messages ADD COLUMN kind TEXT")
+            if "project" not in columns:
+                conn.execute("ALTER TABLE messages ADD COLUMN project TEXT")
             session_columns = {
                 row[1] for row in conn.execute("PRAGMA table_info(sessions)")
             }
@@ -123,8 +133,8 @@ class DB:
                 """
                 INSERT OR IGNORE INTO messages
                     (wa_id, chat_id, sender_id, text, media_path, media_kind, kind,
-                     status, attempts, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'nuevo', 0, ?, ?)
+                     project, status, attempts, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'nuevo', 0, ?, ?)
                 """,
                 (
                     payload.get("id"),
@@ -134,6 +144,7 @@ class DB:
                     (payload.get("media") or {}).get("path"),
                     (payload.get("media") or {}).get("kind"),
                     payload.get("kind"),
+                    payload.get("project"),
                     now,
                     now,
                 ),
@@ -144,7 +155,9 @@ class DB:
         with self._conn() as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute(
-                "SELECT * FROM messages WHERE status = 'nuevo' ORDER BY id LIMIT 1"
+                "SELECT * FROM messages WHERE status = 'nuevo' "
+                "ORDER BY CASE WHEN kind = 'guardar_auto' THEN 1 ELSE 0 END, id "
+                "LIMIT 1"
             ).fetchone()
             if row is None:
                 conn.execute("COMMIT")
@@ -243,6 +256,74 @@ class DB:
                 "DELETE FROM sessions WHERE chat_id = ? AND project = ?", (chat_id, project)
             )
 
+    # ── autoguardado ────────────────────────────────────────────────────────
+
+    def get_autosave(self, chat_id: str, project: str) -> Optional[float]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT saved_at FROM autosave_state WHERE chat_id = ? AND project = ?",
+                (chat_id, project),
+            ).fetchone()
+        return float(row["saved_at"]) if row else None
+
+    def set_autosave(
+        self, chat_id: str, project: str, when: float | None = None
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT INTO autosave_state (chat_id, project, saved_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(chat_id, project) DO UPDATE SET
+                    saved_at = excluded.saved_at
+                """,
+                (chat_id, project, time.time() if when is None else when),
+            )
+
+    def has_pending(self, chat_id: str, kind: str) -> bool:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM messages WHERE chat_id = ? AND kind = ? "
+                "AND status IN ('nuevo', 'procesando') LIMIT 1",
+                (chat_id, kind),
+            ).fetchone()
+        return row is not None
+
+    def last_user_message_at(self, chat_id: str) -> Optional[float]:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) AS ts FROM messages "
+                "WHERE chat_id = ? AND (kind IS NULL OR kind NOT IN "
+                "('guardar', 'guardar_auto', 'reschedule'))",
+                (chat_id,),
+            ).fetchone()
+        return float(row["ts"]) if row and row["ts"] is not None else None
+
+    def autosave_targets(self, since: float) -> list[dict[str, Any]]:
+        """Chats con sesión y actividad real (sin contar guardados) desde `since`."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT s.chat_id, s.project
+                FROM sessions s
+                JOIN chats c ON c.chat_id = s.chat_id AND c.project = s.project
+                WHERE s.chat_id NOT LIKE '%@g.us'
+                  AND s.chat_id NOT LIKE '%@broadcast'
+                  AND s.updated_at >= ?
+                  AND EXISTS (
+                    SELECT 1 FROM messages m
+                    WHERE m.chat_id = s.chat_id
+                      AND m.created_at >= ?
+                      AND (m.kind IS NULL OR m.kind NOT IN
+                           ('guardar', 'guardar_auto', 'reschedule'))
+                  )
+                ORDER BY s.updated_at DESC
+                LIMIT 10
+                """,
+                (since, since),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def reset_project(self, project: str) -> None:
         """Devuelve a 'general' los chats de un proyecto y borra sus sesiones."""
         with self._conn() as conn:
@@ -251,6 +332,7 @@ class DB:
                 (time.time(), project),
             )
             conn.execute("DELETE FROM sessions WHERE project = ?", (project,))
+            conn.execute("DELETE FROM autosave_state WHERE project = ?", (project,))
 
     def last_chat(self, channel: str = "whatsapp") -> Optional[str]:
         """Chat directo más reciente del canal, para avisos proactivos.

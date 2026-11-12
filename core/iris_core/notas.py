@@ -202,6 +202,27 @@ def ensure_project(cfg: Config, name: str) -> bool:
         return False
 
 
+def guardar_prompt(project: str) -> str:
+    """Instrucción para que Claude resuma la conversación en contexto.md."""
+    return f"""Guarda la conversación actual en la memoria del proyecto «{project}».
+
+Usa la API de Notas que ya tienes en el entorno:
+- Base: $NOTAS_API_URL o la primera de $NOTAS_API_URLS (separadas por comas)
+  que responda; cabecera: Authorization: Bearer $NOTAS_API_TOKEN.
+- GET /api/tree para encontrar la nota con path `proyectos/{project}/contexto.md`.
+- GET /api/notes/<id> para leerla.
+- PUT /api/notes/<id> con {{"content": "<contenido completo>"}} para actualizarla.
+- Si no existe, créala con POST /api/notes
+  {{"folder": "proyectos/{project}", "title": "Contexto", "content": "..."}}.
+
+Si no tienes la conversación en el contexto de esta sesión, lee
+`proyectos/{project}/conversacion.md` y resume su último tramo.
+
+Resume solo lo importante: contexto, decisiones, pendientes y referencias.
+No copies la conversación entera ni repitas lo que ya esté.
+Después responde únicamente: Guardado."""
+
+
 def project_context(cfg: Config, project: str) -> str:
     """Contenido de proyectos/<project>/contexto.md (con caché corta)."""
     if not configured(cfg):
@@ -252,6 +273,37 @@ def _append_note(
     except Exception as exc:  # noqa: BLE001
         log.warning("no pude actualizar %s: %s", path, exc)
         return False
+
+
+def conversation_tail(cfg: Config, project: str, limit: int = 4000) -> str:
+    """Último tramo de `conversacion.md`, para dar contexto a una sesión nueva."""
+    if limit <= 0 or not configured(cfg):
+        return ""
+    path = f"{PROJECTS}/{project}/conversacion.md"
+    try:
+        tree = _get(cfg, "/api/tree")
+        note = _find_note(tree, path)
+        if note is None:
+            return ""
+        data = _get(cfg, f"/api/notes/{note['id']}")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("no pude leer %s: %s", path, exc)
+        return ""
+    content = str(data.get("content") or "").strip()
+    if not content:
+        return ""
+    if len(content) <= limit:
+        return content
+    tail = content[-limit:]
+    # Empezar en un bloque completo si se puede; si no, en la primera línea.
+    block = tail.find("\n### ")
+    if block != -1:
+        tail = tail[block + 1 :]
+    else:
+        line = tail.find("\n")
+        if line != -1:
+            tail = tail[line + 1 :]
+    return tail.strip()
 
 
 def save_conversation(cfg: Config, project: str, user_text: str, reply: str) -> bool:

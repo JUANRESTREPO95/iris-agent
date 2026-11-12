@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header, HTTPException
 
-from . import bridge, commands, mail, reminders
+from . import autosave, bridge, commands, mail, reminders
 from .config import load
 from .db import DB
 from .sync import ProjectSync
@@ -27,6 +27,7 @@ worker = Worker(cfg, db)
 sync = ProjectSync(cfg)
 reminder_watcher = reminders.ReminderWatcher(cfg, db)
 mail_watcher = mail.MailWatcher(cfg, db)
+autosave_watcher = autosave.AutoSaveWatcher(cfg, db)
 
 
 @asynccontextmanager
@@ -40,10 +41,12 @@ async def lifespan(_app: FastAPI):
     sync.start()
     reminder_watcher.start()
     mail_watcher.start()
+    autosave_watcher.start()
     try:
         yield
     finally:
         log.info("Iris core detenido")
+        autosave_watcher.stop()
         mail_watcher.stop()
         reminder_watcher.stop()
         sync.stop()

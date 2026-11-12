@@ -84,7 +84,11 @@ class Worker(threading.Thread):
     def _process(self, row) -> None:
         chat_id = row["chat_id"]
         chat = self.db.get_chat(chat_id)
-        project = chat.get("project") or "general"
+        # Los trabajos de /guardar llevan su proyecto fijo: si el usuario
+        # cambia de proyecto mientras esperan, deben guardar el original.
+        project = str(row["project"] or "") if "project" in row.keys() else ""
+        if not project:
+            project = chat.get("project") or "general"
         if not PROJECT_RE.match(project):
             project = "general"
         model = chat.get("model") or self.cfg.model
@@ -92,9 +96,12 @@ class Worker(threading.Thread):
         project_dir = Path(self.cfg.workspace) / project
         project_dir.mkdir(parents=True, exist_ok=True)
 
+        kind = row["kind"] if "kind" in row.keys() else None
         session_id = self.db.get_session(chat_id, project)
         max_hours = float(getattr(self.cfg, "session_max_hours", 0.0) or 0.0)
-        if session_id:
+        # Un /guardar (manual o automático) debe usar la sesión vieja aunque
+        # haya cumplido su tiempo: es justo la conversación que va a resumir.
+        if session_id and kind not in {"guardar", "guardar_auto"}:
             created = self.db.session_created_at(chat_id, project)
             if session_expired(created, max_hours):
                 log.info(
@@ -132,13 +139,23 @@ class Worker(threading.Thread):
             memory_parts.append(
                 f"Contexto del proyecto «{project}»:\n\n{project_memory}"
             )
+        if is_new:
+            tail_chars = int(getattr(self.cfg, "session_tail_chars", 0) or 0)
+            if tail_chars > 0:
+                tail = notas.conversation_tail(self.cfg, project, tail_chars)
+                if tail.strip():
+                    memory_parts.append(
+                        "Últimos mensajes guardados del proyecto "
+                        f"«{project}» (contexto reciente, puede estar "
+                        f"incompleto):\n\n{tail}"
+                    )
         memory = "\n\n".join(memory_parts)
-        kind = row["kind"] if "kind" in row.keys() else None
         self.db.audit("job_start", f"proj={project} model={model}", chat_id)
         typing_stop = threading.Event()
-        threading.Thread(
-            target=self._typing_loop, args=(chat_id, typing_stop), daemon=True
-        ).start()
+        if kind != "guardar_auto":
+            threading.Thread(
+                target=self._typing_loop, args=(chat_id, typing_stop), daemon=True
+            ).start()
 
         started = time.time()
         with self._lock:
@@ -225,10 +242,24 @@ class Worker(threading.Thread):
 
         reply, attachments = bridge.extract_attachments(reply)
 
+        if kind == "guardar_auto":
+            # Silencioso: no se avisa ni se envían adjuntos. El estado ya quedó
+            # marcado y el error, si lo hubo, está en el log/auditoría.
+            if result.ok:
+                log.info("autoguardado ok chat=%s proj=%s", chat_id, project)
+            else:
+                log.warning(
+                    "autoguardado falló chat=%s proj=%s: %s",
+                    chat_id,
+                    project,
+                    (result.error or "")[:200],
+                )
+            return
+
         if (
             result.ok
             and self.cfg.memory_mode == "auto"
-            and kind not in {"guardar", "reschedule"}
+            and kind not in {"guardar", "guardar_auto", "reschedule"}
             and notas.configured(self.cfg)
         ):
             threading.Thread(
